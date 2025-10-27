@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
-    "github.com/bgricker/testdrive/internal/provider"
-    "github.com/bgricker/testdrive/internal/report"
+	"github.com/bgricker/testdrive/internal/provider"
+	"github.com/bgricker/testdrive/internal/report"
 )
 
 // StreamingRenderer interface for real-time step updates.
@@ -24,8 +25,8 @@ type StreamingRenderer interface {
 
 // TimerController is an optional interface for renderers that support a live timer.
 type TimerController interface {
-    StartTimer()
-    StopTimer()
+	StartTimer()
+	StopTimer()
 }
 
 // PrettyRenderer renders execution results in a human-friendly format.
@@ -35,16 +36,13 @@ type PrettyRenderer struct {
 
 // StreamingPrettyRenderer renders execution results with real-time updates like GitHub CI.
 type StreamingPrettyRenderer struct {
-	out io.Writer
-	workflows []workflowInfo
+	out             io.Writer
+	workflows       []workflowInfo
 	currentWorkflow int
-	currentJob int
-    // Timer controls for live updates
-    stopTimer chan struct{}
-    // Track the current line we're on for output
-    currentLine int
-    // Track total lines printed to avoid cursor positioning issues
-    totalLinesPrinted int
+	currentJob      int
+	jobOrder        []jobLocation
+	supportsRefresh bool
+	renderedLines   int
 }
 
 type workflowInfo struct {
@@ -53,22 +51,27 @@ type workflowInfo struct {
 }
 
 type jobInfo struct {
-	name string
-	status string
-	startTime time.Time
-	duration time.Duration
-	steps []stepResult
-	lineNumber int // For cursor positioning
-	detailsShown bool // Track if we've already shown detailed failure info
+	name         string
+	status       string
+	startTime    time.Time
+	duration     time.Duration
+	steps        []stepResult
+	detailsShown bool
+	printed      bool
+}
+
+type jobLocation struct {
+	workflow int
+	job      int
 }
 
 type stepResult struct {
-	name string
-	status string
+	name     string
+	status   string
 	duration time.Duration
-	stderr string
-	stdout string
-	command string
+	stderr   string
+	stdout   string
+	command  string
 }
 
 // NewPretty creates a PrettyRenderer writing to the provided writer.
@@ -166,79 +169,76 @@ func (p *PrettyRenderer) RenderResults(results []report.StepResult, summary repo
 	return nil
 }
 
-// InitializeAllJobs shows all jobs upfront with waiting indicators
+// InitializeAllJobs prepares workflow/job metadata for streaming output.
 func (s *StreamingPrettyRenderer) InitializeAllJobs(workflows []provider.Workflow) error {
-	// Clear existing workflows
-	s.workflows = []workflowInfo{}
-	s.currentLine = 0
-	s.totalLinesPrinted = 0
-	
-	// Add all workflows and jobs
+	s.workflows = make([]workflowInfo, 0, len(workflows))
+	s.jobOrder = make([]jobLocation, 0)
+	s.currentWorkflow = -1
+	s.currentJob = -1
+	s.supportsRefresh = detectRefreshSupport(s.out)
+	s.renderedLines = 0
+
 	for _, wf := range workflows {
+		workflowIndex := len(s.workflows)
 		workflow := workflowInfo{
 			name: wf.Name,
-			jobs: []jobInfo{},
+			jobs: make([]jobInfo, 0, len(wf.Jobs)),
 		}
-		
+
 		for _, job := range wf.Jobs {
-			// Count run steps for this job
 			stepCount := 0
 			for _, step := range job.Steps {
 				if step.Run != "" && step.Uses == "" {
 					stepCount++
 				}
 			}
-			
-			jobInfo := jobInfo{
-				name: job.Name,
-				status: "pending", // Start as pending
-				startTime: time.Now(),
-				duration: 0,
-				steps: make([]stepResult, 0, stepCount),
-				lineNumber: s.totalLinesPrinted, // Track which line this job is on
-			}
-			
-            // Set first job to "running" and others to "pending"; first job's line is already printed.
-            if s.totalLinesPrinted == 0 {
-                jobInfo.status = "running"
-                jobInfo.startTime = time.Now()
-            }
-			
-			// Print initial state - first job running, others waiting
-            if s.totalLinesPrinted == 0 {
-                fmt.Fprintf(s.out, "🟢 %s\n", job.Name)
-            } else {
-                fmt.Fprintf(s.out, "⏳ %s\n", job.Name)
-            }
-            // We just printed exactly one line for this job
-            s.totalLinesPrinted++
-			
-			workflow.jobs = append(workflow.jobs, jobInfo)
+
+			workflow.jobs = append(workflow.jobs, jobInfo{
+				name:   job.Name,
+				status: "pending",
+				steps:  make([]stepResult, 0, stepCount),
+				printed: false,
+			})
+			jobIdx := len(workflow.jobs) - 1
+			s.jobOrder = append(s.jobOrder, jobLocation{workflow: workflowIndex, job: jobIdx})
 		}
-		
+
 		s.workflows = append(s.workflows, workflow)
 	}
-	
+
+	if s.supportsRefresh {
+		s.render()
+	} else {
+		for _, loc := range s.jobOrder {
+			job := &s.workflows[loc.workflow].jobs[loc.job]
+			fmt.Fprintf(s.out, "%s\n", formatJobLine(job))
+		}
+	}
+
 	return nil
 }
 
-// StartJob marks a job as running and updates its display in place
+// StartJob marks a job as running and begins rendering its live status line.
 func (s *StreamingPrettyRenderer) StartJob(jobName string) error {
-    // Find the job and mark it as running
-    for _, workflow := range s.workflows {
-        for i := range workflow.jobs {
-            if workflow.jobs[i].name == jobName && workflow.jobs[i].status == "pending" {
-                job := &workflow.jobs[i]
-                job.status = "running"
-                job.startTime = time.Now()
-                
-                // Update the display to show this job as running
-                s.updateJobLineInPlace(job)
-                return nil
-            }
-        }
-    }
-    return nil
+	wi, ji, job := s.findJob(jobName)
+	if job == nil {
+		return nil
+	}
+
+	if job.status != "pending" {
+		// Nothing to do if job is already running or finished.
+		return nil
+	}
+
+	job.status = "running"
+	job.startTime = time.Now()
+	s.currentWorkflow = wi
+	s.currentJob = ji
+
+	if s.supportsRefresh {
+		s.render()
+	}
+	return nil
 }
 
 // InitializeWorkflow is kept for interface compatibility but not used in the new approach
@@ -253,124 +253,84 @@ func (s *StreamingPrettyRenderer) StartStep(stepName string) error {
 	return nil
 }
 
-// CompleteStep updates a step's status with checkmark or X.
+// CompleteStep records step results so they can be reported if a job fails.
 func (s *StreamingPrettyRenderer) CompleteStep(stepName string, status string, duration time.Duration, stdout, stderr, command string) error {
-	// Find the current job by looking for the most recent running job
-	for _, workflow := range s.workflows {
-		for i := range workflow.jobs {
-			if workflow.jobs[i].status == "running" {
-				job := &workflow.jobs[i]
-				job.steps = append(job.steps, stepResult{
-					name: stepName,
-					status: status,
-					duration: duration,
-					stderr: stderr,
-					stdout: stdout,
-					command: command,
-				})
-				
-				// Don't change job status here - let CompleteJob() handle it
-				return nil
-			}
-		}
+	if s.currentWorkflow < 0 || s.currentJob < 0 {
+		return nil
 	}
-	
+
+	job := &s.workflows[s.currentWorkflow].jobs[s.currentJob]
+	if job.status != "running" {
+		return nil
+	}
+
+	job.steps = append(job.steps, stepResult{
+		name:     stepName,
+		status:   status,
+		duration: duration,
+		stderr:   stderr,
+		stdout:   stdout,
+		command:  command,
+	})
+
 	return nil
 }
 
 // CompleteJob shows the final job status and step details if failed.
 func (s *StreamingPrettyRenderer) CompleteJob() error {
-	// Find the current job by looking for the most recent running job
-	for _, workflow := range s.workflows {
-		for i := range workflow.jobs {
-			if workflow.jobs[i].status == "running" {
-				job := &workflow.jobs[i]
-				job.duration = time.Since(job.startTime)
-				
-				// Determine final job status based on steps
-				job.status = "passed" // Default to passed
-				for _, step := range job.steps {
-					if step.status == "failed" {
-						job.status = "failed"
-						break
-					}
-				}
-				
-                // Update the display to show this job as completed
-                s.updateJobLineInPlace(job)
-                
-                // If job failed, show details immediately
-				if job.status == "failed" {
-                    s.showJobDetails(job)
-					job.detailsShown = true // Mark that we've shown detailed failure info
-				}
-				
-                return nil
-			}
+	if s.currentWorkflow < 0 || s.currentJob < 0 {
+		return nil
+	}
+
+	job := &s.workflows[s.currentWorkflow].jobs[s.currentJob]
+	if job.status != "running" {
+		return nil
+	}
+
+	job.duration = time.Since(job.startTime)
+	job.status = "passed"
+	jobFailed := false
+	for _, step := range job.steps {
+		if step.status == "failed" {
+			job.status = "failed"
+			jobFailed = true
+			break
 		}
 	}
-	
+
+	if s.supportsRefresh {
+		job.detailsShown = jobFailed
+		job.printed = true
+		s.render()
+	} else {
+		if job.printed {
+			if jobFailed && !job.detailsShown {
+				for _, line := range jobDetailLines(job) {
+					fmt.Fprintf(s.out, "%s\n", line)
+				}
+				job.detailsShown = true
+			}
+		} else {
+			fmt.Fprintf(s.out, "%s\n", formatJobLine(job))
+			if jobFailed {
+				for _, line := range jobDetailLines(job) {
+					fmt.Fprintf(s.out, "%s\n", line)
+				}
+				job.detailsShown = true
+			} else {
+				job.detailsShown = false
+			}
+			job.printed = true
+		}
+	}
+
+	s.currentWorkflow = -1
+	s.currentJob = -1
 	return nil
 }
 
-
-// updateJobLineInPlace redraws all job lines in place
-func (s *StreamingPrettyRenderer) updateJobLineInPlace() {
-    // Redraw the entire block deterministically.
-    // 1) Move cursor up by number of jobs
-    totalJobs := 0
-    for _, wf := range s.workflows {
-        totalJobs += len(wf.jobs)
-    }
-    for i := 0; i < totalJobs; i++ {
-        fmt.Fprint(s.out, "\033[1A")
-    }
-
-    // 2) Rewrite all job lines in fixed order, one line per job
-    for _, wf := range s.workflows {
-        for _, j := range wf.jobs {
-            switch j.status {
-            case "passed":
-                fmt.Fprintf(s.out, "\033[2K\r✅ %s (%s)\n", j.name, formatDuration(j.duration))
-            case "failed":
-                fmt.Fprintf(s.out, "\033[2K\r❌ %s (%s)\n", j.name, formatDuration(j.duration))
-            case "running":
-                // Show running with live elapsed
-                fmt.Fprintf(s.out, "\033[2K\r🟢 %s (%s)\n", j.name, formatDuration(time.Since(j.startTime)))
-            case "pending":
-                fmt.Fprintf(s.out, "\033[2K\r⏳ %s\n", j.name)
-            case "skipped":
-                fmt.Fprintf(s.out, "\033[2K\r⏭️ %s\n", j.name)
-            default:
-                fmt.Fprintf(s.out, "\033[2K\r%s\n", j.name)
-            }
-        }
-    }
-    // Cursor naturally ends one line below the block after printing \n each row
-}
-
-// updateJobLine updates the job status line in place
-func (s *StreamingPrettyRenderer) updateJobLine(job *jobInfo) {
-	var emoji string
-	switch job.status {
-	case "passed":
-		emoji = "✅"
-	case "failed":
-		emoji = "❌"
-	case "skipped":
-		emoji = "⏭️"
-	default:
-		emoji = "❓"
-	}
-	
-	// Move cursor up to the job line and overwrite it
-	fmt.Fprintf(s.out, "\033[1A\033[K") // Move up, clear line
-	fmt.Fprintf(s.out, "%s %s (%s)\n", emoji, job.name, formatDuration(job.duration))
-}
-
-// showJobDetails shows step details for failed jobs
-func (s *StreamingPrettyRenderer) showJobDetails(job *jobInfo) {
-	// Then show step details
+func jobDetailLines(job *jobInfo) []string {
+	var lines []string
 	for _, step := range job.steps {
 		var stepEmoji string
 		switch step.status {
@@ -383,179 +343,225 @@ func (s *StreamingPrettyRenderer) showJobDetails(job *jobInfo) {
 		default:
 			stepEmoji = "❓"
 		}
-		fmt.Fprintf(s.out, "    %s %s (%s)\n", stepEmoji, step.name, formatDuration(step.duration))
-		s.totalLinesPrinted++
-		
-		// Show stderr for failed steps with better formatting
+		lines = append(lines, fmt.Sprintf("    %s %s (%s)", stepEmoji, step.name, formatDuration(step.duration)))
+
 		if step.status == "failed" {
-			// Show the command that failed first
 			if step.command != "" {
-				fmt.Fprintf(s.out, "      Command: %s\n", step.command)
-				s.totalLinesPrinted++
+				lines = append(lines, fmt.Sprintf("      Command: %s", step.command))
 			}
-			
-			// Combine stdout and stderr for RSpec parsing
-			combinedOutput := step.stdout + "\n" + step.stderr
+
+			combinedOutput := strings.TrimSuffix(step.stdout, "\n")
+			if combinedOutput != "" && step.stderr != "" {
+				combinedOutput += "\n"
+			}
+			combinedOutput += step.stderr
+
 			cleanedOutput := cleanErrorOutput(combinedOutput)
 			if cleanedOutput != "" {
-				fmt.Fprintf(s.out, "%s\n", indent(cleanedOutput, "      "))
-				s.totalLinesPrinted++
+				for _, line := range strings.Split(cleanedOutput, "\n") {
+					trimmed := strings.TrimSpace(line)
+					if trimmed == "" {
+						continue
+					}
+					lines = append(lines, fmt.Sprintf("      %s", trimmed))
+				}
 			}
 		}
 	}
+	return lines
 }
 
-// RenderSummary shows the final summary.
+func formatJobLine(job *jobInfo) string {
+	switch job.status {
+	case "passed":
+		return fmt.Sprintf("✅ %s (%s)", job.name, formatDuration(job.duration))
+	case "failed":
+		return fmt.Sprintf("❌ %s (%s)", job.name, formatDuration(job.duration))
+	case "running":
+		return fmt.Sprintf("🟢 %s", job.name)
+	case "skipped":
+		return fmt.Sprintf("⏭️ %s", job.name)
+	default:
+		return fmt.Sprintf("⏳ %s", job.name)
+	}
+}
+
+func (s *StreamingPrettyRenderer) findJob(jobName string) (int, int, *jobInfo) {
+	for wi := range s.workflows {
+		for ji := range s.workflows[wi].jobs {
+			if s.workflows[wi].jobs[ji].name == jobName {
+				return wi, ji, &s.workflows[wi].jobs[ji]
+			}
+		}
+	}
+	return -1, -1, nil
+}
+
+func detectRefreshSupport(out io.Writer) bool {
+	if os.Getenv("TESTDRIVE_SIMPLE_OUTPUT") != "" {
+		return false
+	}
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	if term := os.Getenv("TERM"); term == "" || term == "dumb" {
+		return false
+	}
+	return true
+}
+
+func (s *StreamingPrettyRenderer) render() {
+	if !s.supportsRefresh || len(s.jobOrder) == 0 {
+		return
+	}
+
+	lines := make([]string, 0, len(s.jobOrder))
+	for _, loc := range s.jobOrder {
+		job := &s.workflows[loc.workflow].jobs[loc.job]
+		lines = append(lines, formatJobLine(job))
+		if job.detailsShown {
+			lines = append(lines, jobDetailLines(job)...)
+		}
+	}
+
+	newLineCount := len(lines)
+	maxLines := newLineCount
+	if s.renderedLines > maxLines {
+		maxLines = s.renderedLines
+	}
+
+	if s.renderedLines == 0 {
+		if newLineCount > 0 {
+			fmt.Fprint(s.out, strings.Join(lines, "\n"))
+			fmt.Fprint(s.out, "\n")
+			s.renderedLines = newLineCount
+		}
+		return
+	}
+
+	if s.renderedLines > 0 {
+		fmt.Fprintf(s.out, "\033[%dA\r", s.renderedLines)
+	}
+
+	for i := 0; i < maxLines; i++ {
+		fmt.Fprint(s.out, "\r\033[2K")
+		if i < newLineCount {
+			fmt.Fprint(s.out, lines[i])
+		}
+		if i < maxLines-1 {
+			fmt.Fprint(s.out, "\n")
+		}
+	}
+
+	fmt.Fprint(s.out, "\n")
+	s.renderedLines = newLineCount
+}
+
+// RenderSummary shows the final summary
 func (s *StreamingPrettyRenderer) RenderSummary(summary report.Summary) error {
-    // Ensure we start summary on a fresh line
-    fmt.Fprint(s.out, "\n")
-    fmt.Fprintf(s.out, "SUMMARY: %d passed, %d failed, %d skipped (%s)\n", summary.Passed, summary.Failed, summary.Skipped, formatDuration(summary.Duration))
-    return nil
+	if s.supportsRefresh {
+		s.render()
+		fmt.Fprint(s.out, "\n")
+	} else {
+		fmt.Fprint(s.out, "\n")
+	}
+	fmt.Fprintf(s.out, "SUMMARY: %d passed, %d failed, %d skipped (%s)\n", summary.Passed, summary.Failed, summary.Skipped, formatDuration(summary.Duration))
+	return nil
 }
 
 // StartTimer starts a background timer that updates running jobs with live elapsed time
 // Optional timer control interface
 func (s *StreamingPrettyRenderer) StartTimer() {
-    // Disabled for now - timer was causing duplicate lines
-    // TODO: Fix timer to update in place without creating new lines
+	// Disabled for now - timer was causing duplicate lines
+	// TODO: Reintroduce timer updates using ANSI-free rendering
 }
 
 func (s *StreamingPrettyRenderer) StopTimer() {
-    // Timer disabled for now
-}
-
-// updateRunningJobs updates all running jobs with current elapsed time
-func (s *StreamingPrettyRenderer) updateRunningJobs() {
-	// Count how many lines we need to move up
-	totalJobs := 0
-	for _, workflow := range s.workflows {
-		totalJobs += len(workflow.jobs)
-	}
-	
-	// Move cursor up to the first job line, but guard against negative movement when no jobs exist
-	if totalJobs > 0 {
-		for i := 0; i < totalJobs; i++ {
-			fmt.Fprintf(s.out, "\033[1A") // Move up one line
-		}
-	}
-	
-	// Update all jobs
-	for _, workflow := range s.workflows {
-		for _, job := range workflow.jobs {
-			if job.status == "pending" {
-				fmt.Fprintf(s.out, "\033[K") // Clear line
-				fmt.Fprintf(s.out, "⏳ %s\n", job.name)
-			} else if job.status == "running" {
-				elapsed := time.Since(job.startTime)
-				fmt.Fprintf(s.out, "\033[K") // Clear line
-				fmt.Fprintf(s.out, "🟢 %s (%s)\n", job.name, formatDuration(elapsed))
-			} else {
-				// Job is complete, show final status
-				// Skip failed jobs that already showed detailed failure info to avoid duplication
-				if job.status == "failed" && job.detailsShown {
-					continue
-				}
-				
-				var emoji string
-				switch job.status {
-				case "passed":
-					emoji = "✅"
-				case "failed":
-					emoji = "❌"
-				case "skipped":
-					emoji = "⏭️"
-				default:
-					emoji = "❓"
-				}
-				fmt.Fprintf(s.out, "\033[K") // Clear line
-				fmt.Fprintf(s.out, "%s %s (%s)\n", emoji, job.name, formatDuration(job.duration))
-			}
-		}
-	}
+	// Timer disabled for now
 }
 
 // cleanErrorOutput removes noise and makes error output more readable
 func cleanErrorOutput(stderr string) string {
-    lines := strings.Split(stderr, "\n")
-	
+	lines := strings.Split(stderr, "\n")
+
 	// Check if this looks like RSpec output
 	if isRSpecOutput(lines) {
 		return formatRSpecFailures(lines)
 	}
-	
-    // Otherwise, use the general cleaning logic
-    var cleaned []string
-	
+
+	// Otherwise, use the general cleaning logic
+	var cleaned []string
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		
+
 		// Skip empty lines
 		if line == "" {
 			continue
 		}
-		
+
 		// Skip asdf migration warnings
 		if strings.Contains(line, "Bash implementation") ||
-		   strings.Contains(line, "Migration guide") ||
-		   strings.Contains(line, "asdf website") ||
-		   strings.Contains(line, "Source code") ||
-		   strings.Contains(line, "migrate to the new version") {
+			strings.Contains(line, "Migration guide") ||
+			strings.Contains(line, "asdf website") ||
+			strings.Contains(line, "Source code") ||
+			strings.Contains(line, "migrate to the new version") {
 			continue
 		}
-		
+
 		// Skip parser warnings
 		if strings.Contains(line, "parser/current is loading parser") ||
-		   strings.Contains(line, "Please see https://github.com/whitequark/parser") {
+			strings.Contains(line, "Please see https://github.com/whitequark/parser") {
 			continue
 		}
-		
+
 		// Skip config file warnings
 		if strings.Contains(line, "config file has been renamed") ||
-		   strings.Contains(line, "is deprecated") {
+			strings.Contains(line, "is deprecated") {
 			continue
 		}
-		
+
 		// Skip shoulda-matchers warnings
 		if strings.Contains(line, "Warning from shoulda-matchers") ||
-		   strings.Contains(line, "validate_inclusion_of") ||
-		   strings.Contains(line, "boolean column") ||
-		   strings.Contains(line, "************************************************************************") {
+			strings.Contains(line, "validate_inclusion_of") ||
+			strings.Contains(line, "boolean column") ||
+			strings.Contains(line, "************************************************************************") {
 			continue
 		}
-		
-        // Keep important error lines
-        lower := strings.ToLower(line)
-        if strings.Contains(lower, "failure/error:") ||
-           strings.Contains(lower, "expected ") ||
-           strings.Contains(lower, "got ") ||
-           strings.HasPrefix(line, "# ./spec/") ||
-           strings.Contains(lower, "failed") ||
-           strings.Contains(lower, "error") ||
-           strings.Contains(line, "FAILED") ||
-           strings.Contains(lower, "aborted") ||
-           strings.Contains(line, "Tasks: TOP") {
-            cleaned = append(cleaned, line)
-        }
+
+		// Keep important error lines
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "failure/error:") ||
+			strings.Contains(lower, "expected ") ||
+			strings.Contains(lower, "got ") ||
+			strings.HasPrefix(line, "# ./spec/") ||
+			strings.Contains(lower, "failed") ||
+			strings.Contains(lower, "error") ||
+			strings.Contains(line, "FAILED") ||
+			strings.Contains(lower, "aborted") ||
+			strings.Contains(line, "Tasks: TOP") {
+			cleaned = append(cleaned, line)
+		}
 	}
-	
+
 	// If we have cleaned lines, return them; otherwise return a simple message
 	if len(cleaned) > 0 {
 		return strings.Join(cleaned, "\n")
 	}
-	
-    return "Step failed - output suppressed; run with --verbose for full logs"
+
+	return "Step failed - output suppressed; run with --verbose for full logs"
 }
 
 // isRSpecOutput checks if the output looks like RSpec test results
 func isRSpecOutput(lines []string) bool {
 	for _, line := range lines {
-        if strings.Contains(line, "Failures:") ||
-           strings.Contains(line, "Failed examples:") ||
-           strings.Contains(line, "rspec ./spec/") ||
-           strings.Contains(line, "Finished in") ||
-           strings.Contains(line, "examples,") ||
-           strings.Contains(line, "Failure/Error:") ||
-           strings.Contains(line, ") ") { // numbered failures like "1) ..."
+		if strings.Contains(line, "Failures:") ||
+			strings.Contains(line, "Failed examples:") ||
+			strings.Contains(line, "rspec ./spec/") ||
+			strings.Contains(line, "Finished in") ||
+			strings.Contains(line, "examples,") ||
+			strings.Contains(line, "Failure/Error:") ||
+			strings.Contains(line, ") ") { // numbered failures like "1) ..."
 			return true
 		}
 	}
@@ -566,91 +572,91 @@ func isRSpecOutput(lines []string) bool {
 func formatRSpecFailures(lines []string) string {
 	var result []string
 	var currentFailure []string
-    inFailedExamples := false
-	
+	inFailedExamples := false
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		
-        // Skip empty lines and noise
-		if line == "" || 
-		   strings.Contains(line, "Bash implementation") ||
-		   strings.Contains(line, "Migration guide") ||
-		   strings.Contains(line, "asdf website") ||
-		   strings.Contains(line, "Source code") ||
-		   strings.Contains(line, "migrate to the new version") ||
-		   strings.Contains(line, "parser/current is loading parser") ||
-		   strings.Contains(line, "Please see https://github.com/whitequark/parser") ||
-		   strings.Contains(line, "config file has been renamed") ||
-		   strings.Contains(line, "is deprecated") ||
-		   strings.Contains(line, "Warning from shoulda-matchers") ||
-		   strings.Contains(line, "validate_inclusion_of") ||
-		   strings.Contains(line, "boolean column") ||
-		   strings.Contains(line, "************************************************************************") ||
-		   strings.Contains(line, "Finished in") ||
-		   strings.Contains(line, "examples,") ||
-		   strings.Contains(line, "Randomized with seed") ||
-		   strings.Contains(line, "Pending:") ||
-		   strings.Contains(line, "Not yet implemented") ||
-		   strings.Contains(line, "Database connection mocking") ||
-		   strings.Contains(line, "# ./spec/support/database_cleaner.rb") {
-			continue
-        }
 
-        // Handle the concise "Failed examples:" tail section when our tail dropped the main block
-        if strings.HasPrefix(line, "Failed examples:") {
-            inFailedExamples = true
-            continue
-        }
-        if inFailedExamples {
-            if strings.HasPrefix(line, "rspec ./spec/") {
-                // Example format: "rspec ./spec/models/foo_spec.rb:12 # description..."
-                // Trim after first space following path to keep it short
-                path := line
-                if hash := strings.Index(line, " # "); hash != -1 {
-                    path = line[len("rspec "):hash]
-                } else if strings.HasPrefix(line, "rspec ") {
-                    path = strings.TrimPrefix(line, "rspec ")
-                }
-                result = append(result, fmt.Sprintf("        ❌ %s", path))
-            }
+		// Skip empty lines and noise
+		if line == "" ||
+			strings.Contains(line, "Bash implementation") ||
+			strings.Contains(line, "Migration guide") ||
+			strings.Contains(line, "asdf website") ||
+			strings.Contains(line, "Source code") ||
+			strings.Contains(line, "migrate to the new version") ||
+			strings.Contains(line, "parser/current is loading parser") ||
+			strings.Contains(line, "Please see https://github.com/whitequark/parser") ||
+			strings.Contains(line, "config file has been renamed") ||
+			strings.Contains(line, "is deprecated") ||
+			strings.Contains(line, "Warning from shoulda-matchers") ||
+			strings.Contains(line, "validate_inclusion_of") ||
+			strings.Contains(line, "boolean column") ||
+			strings.Contains(line, "************************************************************************") ||
+			strings.Contains(line, "Finished in") ||
+			strings.Contains(line, "examples,") ||
+			strings.Contains(line, "Randomized with seed") ||
+			strings.Contains(line, "Pending:") ||
+			strings.Contains(line, "Not yet implemented") ||
+			strings.Contains(line, "Database connection mocking") ||
+			strings.Contains(line, "# ./spec/support/database_cleaner.rb") {
+			continue
+		}
+
+		// Handle the concise "Failed examples:" tail section when our tail dropped the main block
+		if strings.HasPrefix(line, "Failed examples:") {
+			inFailedExamples = true
+			continue
+		}
+		if inFailedExamples {
+			if strings.HasPrefix(line, "rspec ./spec/") {
+				// Example format: "rspec ./spec/models/foo_spec.rb:12 # description..."
+				// Trim after first space following path to keep it short
+				path := line
+				if hash := strings.Index(line, " # "); hash != -1 {
+					path = line[len("rspec "):hash]
+				} else if strings.HasPrefix(line, "rspec ") {
+					path = strings.TrimPrefix(line, "rspec ")
+				}
+				result = append(result, fmt.Sprintf("        ❌ %s", path))
+			}
 			// Do not process other lines in this block
-            continue
-        }
-		
-        // Start of a new failure (numbered like "2) DetectMovementsJob...")
-        if strings.Contains(line, ") ") && !strings.Contains(line, "Failure/Error:") {
+			continue
+		}
+
+		// Start of a new failure (numbered like "2) DetectMovementsJob...")
+		if strings.Contains(line, ") ") && !strings.Contains(line, "Failure/Error:") {
 			if len(currentFailure) > 0 {
 				result = append(result, formatSingleFailure(currentFailure)...)
 			}
 			currentFailure = []string{line}
 		} else if len(currentFailure) > 0 {
 			// Continue collecting details for current failure
-            if strings.Contains(line, "Failure/Error:") ||
-               strings.Contains(strings.ToLower(line), "expected") ||
-               strings.Contains(strings.ToLower(line), "got") ||
-               strings.HasPrefix(line, "# ./spec/") {
+			if strings.Contains(line, "Failure/Error:") ||
+				strings.Contains(strings.ToLower(line), "expected") ||
+				strings.Contains(strings.ToLower(line), "got") ||
+				strings.HasPrefix(line, "# ./spec/") {
 				currentFailure = append(currentFailure, line)
 			}
 		}
 	}
-	
+
 	// Handle the last failure
 	if len(currentFailure) > 0 {
 		result = append(result, formatSingleFailure(currentFailure)...)
 	}
-	
-    if len(result) > 0 {
+
+	if len(result) > 0 {
 		return strings.Join(result, "\n")
 	}
-	
-    // Summarize failures we parsed, keeping it concise
-    return "RSpec tests failed"
+
+	// Summarize failures we parsed, keeping it concise
+	return "RSpec tests failed"
 }
 
 // formatSingleFailure formats a single RSpec failure
 func formatSingleFailure(failureLines []string) []string {
 	var result []string
-	
+
 	for i, line := range failureLines {
 		if i == 0 {
 			// Extract the spec file and line number from the failure line
@@ -672,7 +678,7 @@ func formatSingleFailure(failureLines []string) []string {
 			result = append(result, fmt.Sprintf("        ❌ %s", specPath))
 		}
 	}
-	
+
 	return result
 }
 
