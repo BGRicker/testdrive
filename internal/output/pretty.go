@@ -10,6 +10,7 @@ import (
 
 	"github.com/bgricker/testdrive/internal/provider"
 	"github.com/bgricker/testdrive/internal/report"
+	"golang.org/x/term"
 )
 
 // StreamingRenderer interface for real-time step updates.
@@ -404,9 +405,20 @@ func detectRefreshSupport(out io.Writer) bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
 	}
-	if term := os.Getenv("TERM"); term == "" || term == "dumb" {
+	if envTerm := os.Getenv("TERM"); envTerm == "" || envTerm == "dumb" {
 		return false
 	}
+	
+	// Check if the writer is actually a terminal
+	if f, ok := out.(*os.File); ok {
+		if f != os.Stdout && f != os.Stderr {
+			return false
+		}
+		if !term.IsTerminal(int(f.Fd())) {
+			return false
+		}
+	}
+	
 	return true
 }
 
@@ -430,21 +442,14 @@ func (s *StreamingPrettyRenderer) render() {
 		maxLines = s.renderedLines
 	}
 
-	if s.renderedLines == 0 {
-		if newLineCount > 0 {
-			fmt.Fprint(s.out, strings.Join(lines, "\n"))
-			fmt.Fprint(s.out, "\n")
-			s.renderedLines = newLineCount
-		}
-		return
-	}
-
+	// Move cursor up if we've previously rendered lines
 	if s.renderedLines > 0 {
 		fmt.Fprintf(s.out, "\033[%dA\r", s.renderedLines)
 	}
 
+	// Clear and redraw each line
 	for i := 0; i < maxLines; i++ {
-		fmt.Fprint(s.out, "\r\033[2K")
+		fmt.Fprint(s.out, "\r\033[2K") // Clear line
 		if i < newLineCount {
 			fmt.Fprint(s.out, lines[i])
 		}
@@ -723,3 +728,4 @@ func formatDuration(d time.Duration) string {
 	}
 	return d.Truncate(time.Millisecond).String()
 }
+
