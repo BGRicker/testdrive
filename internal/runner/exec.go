@@ -264,8 +264,11 @@ func (r *Runner) runStep(ctx context.Context, wf provider.Workflow, job provider
 		step.Run = applyAutoFixRules(step.Run, r.opts.AutoFixRules)
 	}
 
+	// Auto-detect: if job has services, use local env (since testdrive can't run services)
+	useLocalEnv := r.opts.UseLocalEnv || job.HasServices
+
 	var env []string
-	if r.opts.UseLocalEnv {
+	if useLocalEnv {
 		// Use only local environment, ignore workflow/job/step env variables
 		env = r.opts.Env
 	} else {

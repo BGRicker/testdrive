@@ -65,6 +65,11 @@ func DefaultAutoFixRules() []AutoFixRule {
 			AddFlags:    []string{"-A"},
 		},
 		{
+			// Rails standard task - must come before generic "standard" rule
+			Pattern: "bin/rails standard",
+			Replace: "bin/rails standard:fix",
+		},
+		{
 			// More specific pattern first to avoid matching "standard"
 			Pattern:  "standardrb",
 			AddFlags: []string{"--fix"},

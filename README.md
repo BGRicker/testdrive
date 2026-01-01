@@ -75,17 +75,32 @@ Testdrive automatically inherits your shell environment and supports version man
 
 ### Local Environment Mode
 
-When your local environment is already configured (e.g., database credentials in `.env`, shell variables), use `--use-local-env` to ignore workflow-defined environment variables:
+Testdrive intelligently handles environment variables to make local testing seamless:
+
+**Smart Auto-Detection:**
+When your workflow defines `services:` (like PostgreSQL, Redis, etc.), testdrive **automatically uses your local environment** instead of workflow env variables. This happens because testdrive can't run services containers, so the workflow's env vars (pointing to non-existent services) won't work anyway.
 
 ```bash
-# Use your local DATABASE_URL instead of the workflow's hardcoded postgres credentials
+# If your workflow has services:, local env is used automatically!
+$ testdrive run
+# Warning shown: "services are not supported; automatically using local environment instead"
+```
+
+**Manual Override:**
+You can explicitly control environment behavior:
+
+```bash
+# Force local env (even without services)
 $ testdrive run --use-local-env
+
+# Or configure it permanently in .testdrive.yml:
+use_local_env: true
 ```
 
 This is particularly useful when:
 - Your workflow defines CI-specific database connections (like `postgres:postgres@localhost`)
 - You have local credentials in `.env` files or shell environment
-- Your workflow uses GitHub Actions `services:` (which testdrive doesn't support)
+- You want consistent behavior across all workflows
 
 ### Auto-Fix Mode
 
@@ -101,6 +116,7 @@ $ testdrive run --auto-fix
 | Original Command | Transformed Command |
 |-----------------|---------------------|
 | `rubocop --parallel` | `rubocop -A` |
+| `bin/rails standard` | `bin/rails standard:fix` |
 | `standard` | `standard --fix` |
 | `standardrb` | `standardrb --fix` |
 | `prettier --check` | `prettier --write` |

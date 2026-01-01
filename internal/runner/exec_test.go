@@ -489,6 +489,17 @@ func TestApplyAutoFixRules(t *testing.T) {
 			},
 			expected: "black src/",
 		},
+		{
+			name:    "rails standard task to fix task",
+			command: "bin/rails standard",
+			rules: []config.AutoFixRule{
+				{
+					Pattern: "bin/rails standard",
+					Replace: "bin/rails standard:fix",
+				},
+			},
+			expected: "bin/rails standard:fix",
+		},
 	}
 
 	for _, tt := range tests {
