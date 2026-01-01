@@ -32,6 +32,9 @@ $ testdrive run --use-local-env
 # Skip specific steps (e.g., database setup when you already have a working DB)
 $ testdrive run --skip-step "Set up database"
 
+# Transform lint commands to auto-fix mode
+$ testdrive run --auto-fix
+
 # Allow privileged commands (e.g., sudo/apt-get) when absolutely necessary
 $ TESTDRIVE_ALLOW_PRIVILEGED=1 testdrive run
 ```
@@ -84,6 +87,38 @@ This is particularly useful when:
 - You have local credentials in `.env` files or shell environment
 - Your workflow uses GitHub Actions `services:` (which testdrive doesn't support)
 
+### Auto-Fix Mode
+
+When developing locally, you often want linters to automatically fix issues rather than just report them. Use `--auto-fix` to transform lint commands to their auto-fix variants:
+
+```bash
+# Automatically transforms common linting tools to fix mode
+$ testdrive run --auto-fix
+```
+
+**Built-in transformations:**
+
+| Original Command | Transformed Command |
+|-----------------|---------------------|
+| `rubocop --parallel` | `rubocop -A` |
+| `standard` | `standard --fix` |
+| `standardrb` | `standardrb --fix` |
+| `prettier --check` | `prettier --write` |
+| `eslint` | `eslint --fix` |
+| `ruff check` | `ruff check --fix` |
+
+**Custom transformations** can be configured in `.testdrive.yml`:
+
+```yaml
+auto_fix: true  # Enable by default
+auto_fix_rules:
+  - pattern: 'yarn lint'
+    replace: 'yarn fix:prettier'
+  - pattern: 'custom-linter'
+    remove_flags: ['--strict']
+    add_flags: ['--fix']
+```
+
 ## Configuration
 
 An optional `.testdrive.yml` can provide defaults for the CLI. Command-line flags always win over config values.
@@ -100,6 +135,10 @@ skip_step:
   - "Upload artifact"
   - "Set up database schema"  # Skip DB setup if you already have a working database
 use_local_env: false      # Set to true to ignore workflow env variables
+auto_fix: false           # Set to true to transform lint commands to auto-fix mode
+auto_fix_rules:           # Custom auto-fix transformations (replaces defaults if provided)
+  - pattern: 'yarn lint'
+    replace: 'yarn fix:prettier'
 dry_run: false
 verbose: false
 format: pretty             # pretty|json
