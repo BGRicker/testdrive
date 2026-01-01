@@ -20,12 +20,14 @@ func newRootCmd() *cobra.Command {
 	persistent.StringArray("skip-step", nil, "exclude matching steps")
 	persistent.Bool("use-local-env", false, "ignore workflow env variables, use only local environment")
 	persistent.Bool("auto-fix", false, "transform lint commands to auto-fix mode (e.g., rubocop -A)")
+	persistent.Bool("smart-filter", false, "only run tests related to changed files (watch mode only)")
 	persistent.Bool("dry-run", false, "print commands without executing them")
 	persistent.BoolP("verbose", "v", false, "stream command output in real time")
 	persistent.String("format", "pretty", "output format (pretty|json)")
 
 	cmd.AddCommand(newListCmd())
 	cmd.AddCommand(newRunCmd())
+	cmd.AddCommand(newWatchCmd())
 
 	return cmd
 }

@@ -37,6 +37,12 @@ $ testdrive run --auto-fix
 
 # Allow privileged commands (e.g., sudo/apt-get) when absolutely necessary
 $ TESTDRIVE_ALLOW_PRIVILEGED=1 testdrive run
+
+# Watch for file changes and auto-rerun workflows
+$ testdrive watch
+
+# Watch with smart filtering - only run tests related to changed files
+$ testdrive watch --smart-filter
 ```
 
 ### Streaming UI (GitHub-style)
@@ -136,6 +142,106 @@ auto_fix_rules:
     add_flags: ['--fix']
 ```
 
+### Watch Mode
+
+Watch mode automatically re-runs your workflows when files change, providing immediate feedback during development:
+
+```bash
+# Watch for changes and auto-rerun workflows
+$ testdrive watch
+
+# Watch mode respects all the same filters and options
+$ testdrive watch --job test --auto-fix
+```
+
+**Features:**
+- **Debounced re-runs**: Multiple rapid file changes are batched together (default 300ms)
+- **Smart ignore patterns**: Automatically ignores common paths like `node_modules`, `vendor`, `.git`, `tmp`, `log`, and more
+- **Clear terminal**: Optionally clears the screen between runs for a clean view (enabled by default)
+- **Graceful shutdown**: Press Ctrl+C to stop watching
+
+**Configuration** in `.testdrive.yml`:
+
+```yaml
+watch:
+  debounce_ms: 300        # Wait time before re-running (default: 300ms)
+  clear_on_run: true      # Clear terminal between runs (default: true)
+  ignore_patterns:        # Additional patterns to ignore (extends defaults)
+    - "**/*.tmp"
+    - "**/build/**"
+  include_patterns:       # Only watch these patterns (optional)
+    - "**/*.go"
+    - "**/*.yaml"
+```
+
+Default ignore patterns include:
+- `**/node_modules/**`
+- `**/vendor/**`
+- `**/tmp/**`
+- `**/log/**`
+- `**/.git/**`
+- `**/.testdrive/**`
+- `**/*.log`
+- `**/.DS_Store`
+- `**/coverage/**`
+
+### Smart File Filtering
+
+Smart filtering dramatically speeds up watch mode for large codebases by only running tests related to changed files. When enabled, testdrive intelligently maps source files to their corresponding test files.
+
+```bash
+# Enable smart filtering in watch mode
+$ testdrive watch --smart-filter
+
+# Or set it as default in config
+$ cat .testdrive.yml
+smart_filter: true
+```
+
+**How it works:**
+
+When files change, testdrive:
+1. If a test file changed → runs that test
+2. If a source file changed → finds and runs related tests using smart mapping rules
+
+**Built-in mapping rules:**
+
+| Source File | Related Tests |
+|-------------|---------------|
+| `app/models/user.rb` | `spec/models/user_spec.rb` |
+| `app/controllers/users_controller.rb` | `spec/controllers/users_controller_spec.rb`<br>`spec/requests/*_spec.rb`<br>`spec/integration/*_spec.rb` |
+| `src/components/Button.tsx` | `**/*Button*.test.tsx`<br>`**/*Button*.spec.tsx` |
+| `lib/utils.py` | `tests/test_utils.py` |
+| `pkg/server/handler.go` | `pkg/server/handler_test.go` |
+
+**Custom mapping rules** in `.testdrive.yml`:
+
+```yaml
+smart_filter: true
+smart_filter_rules:
+  # Map API files to both unit and integration tests
+  - pattern: "app/api/**/*.rb"
+    test_pattern: "spec/api/**/*_spec.rb"
+    additional:
+      - "spec/requests/api/**/*_spec.rb"
+
+  # Map React components to their test files
+  - pattern: "src/components/**/*.tsx"
+    test_pattern: "src/components/**/*.test.tsx"
+    additional:
+      - "src/__tests__/components/**/*.test.tsx"
+
+  # Map Go packages to their tests
+  - pattern: "internal/**/*.go"
+    test_pattern: "internal/**/*_test.go"
+```
+
+**Supported test frameworks:**
+- RSpec (Rails) - automatically modifies `bundle exec rspec` commands
+- Go - automatically modifies `go test` commands
+- Jest/npm test - automatically modifies JavaScript test commands
+- pytest - automatically modifies Python test commands
+
 ## Configuration
 
 An optional `.testdrive.yml` can provide defaults for the CLI. Command-line flags always win over config values.
@@ -156,6 +262,19 @@ auto_fix: false           # Set to true to transform lint commands to auto-fix m
 auto_fix_rules:           # Custom auto-fix transformations (replaces defaults if provided)
   - pattern: 'yarn lint'
     replace: 'yarn fix:prettier'
+watch:                    # Watch mode configuration
+  debounce_ms: 300
+  clear_on_run: true
+  ignore_patterns:
+    - "**/*.tmp"
+  include_patterns:       # Optional: only watch specific file types
+    - "**/*.go"
+smart_filter: false       # Set to true to enable smart filtering by default
+smart_filter_rules:       # Custom file-to-test mappings (replaces defaults if provided)
+  - pattern: "app/api/**/*.rb"
+    test_pattern: "spec/api/**/*_spec.rb"
+    additional:
+      - "spec/requests/api/**/*_spec.rb"
 dry_run: false
 verbose: false
 format: pretty             # pretty|json
@@ -175,7 +294,10 @@ privileged_command_patterns:
 - ✅ Environment inheritance with asdf/rbenv support
 - ✅ Cross-shell compatibility (bash, zsh, ksh, sh, fish)
 - ✅ Privileged command detection and skipping
-- 🚧 Upcoming: richer runtime pre-flight checks, additional CI providers, matrix & services support
+- ✅ Watch mode with file change detection and auto-rerun
+- ✅ Auto-fix mode for transforming linters to fix mode
+- ✅ Smart file filtering - only run tests related to changed files
+- 🚧 Upcoming: parallel job execution, interactive TUI, git hook integration
   - Version mismatch warnings are enabled by default; set `warn.version_mismatch: false` to silence them.
 
 Want to dig in? Run `go test ./...` to exercise the parser, runner, and CLI tests.

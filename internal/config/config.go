@@ -23,11 +23,31 @@ type Config struct {
 	Verbose bool   `yaml:"verbose"`
 	Format  string `yaml:"format"`
 
-	AutoFix      bool           `yaml:"auto_fix"`
-	AutoFixRules []AutoFixRule  `yaml:"auto_fix_rules"`
+	AutoFix      bool          `yaml:"auto_fix"`
+	AutoFixRules []AutoFixRule `yaml:"auto_fix_rules"`
+
+	Watch WatchConfig `yaml:"watch"`
+
+	SmartFilter      bool              `yaml:"smart_filter"`
+	SmartFilterRules []SmartFilterRule `yaml:"smart_filter_rules"`
 
 	Warn                      WarnConfig `yaml:"warn"`
 	PrivilegedCommandPatterns []string   `yaml:"privileged_command_patterns"`
+}
+
+// WatchConfig controls file watching behavior.
+type WatchConfig struct {
+	DebounceMS      int      `yaml:"debounce_ms"`
+	ClearOnRun      bool     `yaml:"clear_on_run"`
+	IgnorePatterns  []string `yaml:"ignore_patterns"`
+	IncludePatterns []string `yaml:"include_patterns"`
+}
+
+// SmartFilterRule defines how to map source files to test files.
+type SmartFilterRule struct {
+	Pattern     string   `yaml:"pattern"`      // Pattern to match source files (e.g., "app/models/**/*.rb")
+	TestPattern string   `yaml:"test_pattern"` // Pattern for test files (e.g., "spec/models/**/*_spec.rb")
+	Additional  []string `yaml:"additional"`   // Additional patterns to include (e.g., integration tests)
 }
 
 // AutoFixRule defines how to transform a command for auto-fixing.
@@ -46,9 +66,14 @@ type WarnConfig struct {
 // Default returns the baseline configuration used when no flags or config file specify values.
 func Default() Config {
 	return Config{
-		Provider:     ProviderAuto,
-		Format:       FormatPretty,
-		AutoFixRules: DefaultAutoFixRules(),
+		Provider:         ProviderAuto,
+		Format:           FormatPretty,
+		AutoFixRules:     DefaultAutoFixRules(),
+		SmartFilterRules: DefaultSmartFilterRules(),
+		Watch: WatchConfig{
+			DebounceMS: 300,
+			ClearOnRun: true,
+		},
 		Warn: WarnConfig{
 			VersionMismatch: true,
 		},
@@ -99,6 +124,78 @@ func DefaultAutoFixRules() []AutoFixRule {
 	}
 }
 
+// DefaultSmartFilterRules returns sensible file-to-test mappings for common frameworks.
+func DefaultSmartFilterRules() []SmartFilterRule {
+	return []SmartFilterRule{
+		// Rails: Models
+		{
+			Pattern:     "app/models/**/*.rb",
+			TestPattern: "spec/models/**/*_spec.rb",
+		},
+		// Rails: Controllers
+		{
+			Pattern:     "app/controllers/**/*.rb",
+			TestPattern: "spec/controllers/**/*_spec.rb",
+			Additional:  []string{"spec/requests/**/*_spec.rb", "spec/integration/**/*_spec.rb"},
+		},
+		// Rails: Views/Helpers
+		{
+			Pattern:     "app/views/**/*",
+			TestPattern: "spec/views/**/*_spec.rb",
+			Additional:  []string{"spec/features/**/*_spec.rb", "spec/system/**/*_spec.rb"},
+		},
+		{
+			Pattern:     "app/helpers/**/*.rb",
+			TestPattern: "spec/helpers/**/*_spec.rb",
+		},
+		// Rails: Jobs/Mailers/Channels
+		{
+			Pattern:     "app/jobs/**/*.rb",
+			TestPattern: "spec/jobs/**/*_spec.rb",
+		},
+		{
+			Pattern:     "app/mailers/**/*.rb",
+			TestPattern: "spec/mailers/**/*_spec.rb",
+		},
+		{
+			Pattern:     "app/channels/**/*.rb",
+			TestPattern: "spec/channels/**/*_spec.rb",
+		},
+		// Go: Source files
+		{
+			Pattern:     "**/*.go",
+			TestPattern: "**/*_test.go",
+		},
+		// JavaScript/TypeScript: Source files
+		{
+			Pattern:     "src/**/*.js",
+			TestPattern: "**/*.test.js",
+			Additional:  []string{"**/*.spec.js"},
+		},
+		{
+			Pattern:     "src/**/*.ts",
+			TestPattern: "**/*.test.ts",
+			Additional:  []string{"**/*.spec.ts"},
+		},
+		{
+			Pattern:     "src/**/*.jsx",
+			TestPattern: "**/*.test.jsx",
+			Additional:  []string{"**/*.spec.jsx"},
+		},
+		{
+			Pattern:     "src/**/*.tsx",
+			TestPattern: "**/*.test.tsx",
+			Additional:  []string{"**/*.spec.tsx"},
+		},
+		// Python
+		{
+			Pattern:     "**/*.py",
+			TestPattern: "**/test_*.py",
+			Additional:  []string{"**/*_test.py"},
+		},
+	}
+}
+
 const (
 	// ProviderAuto selects the provider based on repository contents.
 	ProviderAuto = "auto"
@@ -114,7 +211,7 @@ const (
 // Load reads .testdrive.yml from the repository root when present. Missing files are ignored.
 func Load(root string) (Config, error) {
 	cfg := Default()
-    path := filepath.Join(root, ".testdrive.yml")
+	path := filepath.Join(root, ".testdrive.yml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -128,11 +225,35 @@ func Load(root string) (Config, error) {
 		return cfg, fmt.Errorf("parse config %q: %w", path, err)
 	}
 
-	cfg = merge(cfg, fileCfg)
+	meta := parseConfigMeta(data)
+	cfg = merge(cfg, fileCfg, meta)
 	return cfg, nil
 }
 
-func merge(base, override Config) Config {
+type configMeta struct {
+	watchFields map[string]bool
+}
+
+func parseConfigMeta(data []byte) configMeta {
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return configMeta{}
+	}
+
+	watchRaw, ok := raw["watch"].(map[string]any)
+	if !ok {
+		return configMeta{}
+	}
+
+	fields := make(map[string]bool, len(watchRaw))
+	for key := range watchRaw {
+		fields[key] = true
+	}
+
+	return configMeta{watchFields: fields}
+}
+
+func merge(base, override Config, meta configMeta) Config {
 	out := base
 
 	if override.Provider != "" {
@@ -171,6 +292,28 @@ func merge(base, override Config) Config {
 	if override.AutoFixRules != nil {
 		// User-provided rules completely replace defaults (even if empty list)
 		out.AutoFixRules = append([]AutoFixRule{}, override.AutoFixRules...)
+	}
+	if override.SmartFilter {
+		out.SmartFilter = true
+	}
+	if override.SmartFilterRules != nil {
+		// User-provided rules completely replace defaults (even if empty list)
+		out.SmartFilterRules = append([]SmartFilterRule{}, override.SmartFilterRules...)
+	}
+
+	if len(meta.watchFields) > 0 {
+		if meta.watchFields["debounce_ms"] {
+			out.Watch.DebounceMS = override.Watch.DebounceMS
+		}
+		if meta.watchFields["clear_on_run"] {
+			out.Watch.ClearOnRun = override.Watch.ClearOnRun
+		}
+		if meta.watchFields["ignore_patterns"] {
+			out.Watch.IgnorePatterns = append([]string{}, override.Watch.IgnorePatterns...)
+		}
+		if meta.watchFields["include_patterns"] {
+			out.Watch.IncludePatterns = append([]string{}, override.Watch.IncludePatterns...)
+		}
 	}
 
 	if override.Warn.VersionMismatch {
@@ -212,6 +355,9 @@ func ApplyFlags(cfg *Config, flags FlagValues) {
 	if flags.AutoFix.Set {
 		cfg.AutoFix = flags.AutoFix.Value
 	}
+	if flags.SmartFilter.Set {
+		cfg.SmartFilter = flags.SmartFilter.Value
+	}
 }
 
 // FlagValues captures CLI flag state with knowledge of whether each flag was set explicitly.
@@ -226,6 +372,7 @@ type FlagValues struct {
 	Verbose     BoolFlag
 	UseLocalEnv BoolFlag
 	AutoFix     BoolFlag
+	SmartFilter BoolFlag
 }
 
 // StringFlag represents a string flag and whether it was set.
