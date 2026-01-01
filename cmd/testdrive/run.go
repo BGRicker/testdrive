@@ -46,6 +46,8 @@ func runExecute(cmd *cobra.Command, args []string) error {
 		TailLines:          20,
 		AllowPrivileged:    allowPrivileged,
 		PrivilegedPatterns: append([]string{}, cfg.PrivilegedCommandPatterns...),
+		SkipSteps:          append([]string{}, cfg.SkipSteps...),
+		UseLocalEnv:        cfg.UseLocalEnv,
 	}
 
     	// Enable streaming for pretty format when not verbose and not dry-run
