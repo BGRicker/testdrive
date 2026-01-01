@@ -33,6 +33,8 @@ type Options struct {
 	PrivilegedPatterns []string
 	Streaming          bool
 	StreamingRenderer  output.StreamingRenderer
+	SkipSteps          []string // Step name patterns to skip (supports wildcards)
+	UseLocalEnv        bool     // If true, ignore workflow env variables and use only local environment
 }
 
 // Runner executes workflow steps sequentially.
@@ -254,7 +256,14 @@ func (r *Runner) runBatch(workflows []provider.Workflow) ([]report.StepResult, r
 }
 
 func (r *Runner) runStep(ctx context.Context, wf provider.Workflow, job provider.Job, step provider.Step, result *report.StepResult) error {
-	env := mergeEnv(r.opts.Env, wf.Env, job.Env, step.Env)
+	var env []string
+	if r.opts.UseLocalEnv {
+		// Use only local environment, ignore workflow/job/step env variables
+		env = r.opts.Env
+	} else {
+		// Merge workflow, job, and step env with base environment
+		env = mergeEnv(r.opts.Env, wf.Env, job.Env, step.Env)
+	}
 	cmdArgs, err := buildCommand(step, job, wf, env)
 	if err != nil {
 		result.Stderr = err.Error()

@@ -26,6 +26,12 @@ $ testdrive run --job test --only-step "Lint" --format json
 # Stream command output as it runs
 $ testdrive run --verbose
 
+# Use local environment only, ignoring workflow env variables
+$ testdrive run --use-local-env
+
+# Skip specific steps (e.g., database setup when you already have a working DB)
+$ testdrive run --skip-step "Set up database"
+
 # Allow privileged commands (e.g., sudo/apt-get) when absolutely necessary
 $ TESTDRIVE_ALLOW_PRIVILEGED=1 testdrive run
 ```
@@ -61,8 +67,22 @@ Testdrive automatically inherits your shell environment and supports version man
 - **asdf**: Automatically sources `asdf.sh` (or `asdf.fish` for fish shell) to ensure correct Ruby, Node, Python versions
 - **rbenv**: Works with your existing rbenv setup
 - **Shell compatibility**: Supports bash, zsh, ksh, sh, and fish shells
-- **Environment variables**: Merges workflow → job → step environment variables
+- **Environment variables**: Merges workflow → job → step environment variables (override with `--use-local-env`)
 - **Working directories**: Respects `working-directory` settings from workflows
+
+### Local Environment Mode
+
+When your local environment is already configured (e.g., database credentials in `.env`, shell variables), use `--use-local-env` to ignore workflow-defined environment variables:
+
+```bash
+# Use your local DATABASE_URL instead of the workflow's hardcoded postgres credentials
+$ testdrive run --use-local-env
+```
+
+This is particularly useful when:
+- Your workflow defines CI-specific database connections (like `postgres:postgres@localhost`)
+- You have local credentials in `.env` files or shell environment
+- Your workflow uses GitHub Actions `services:` (which testdrive doesn't support)
 
 ## Configuration
 
@@ -78,6 +98,8 @@ only_step:
   - /lint/
 skip_step:
   - "Upload artifact"
+  - "Set up database schema"  # Skip DB setup if you already have a working database
+use_local_env: false      # Set to true to ignore workflow env variables
 dry_run: false
 verbose: false
 format: pretty             # pretty|json

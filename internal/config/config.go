@@ -15,8 +15,9 @@ type Config struct {
 	Workflows []string `yaml:"workflows"`
 	Jobs      []string `yaml:"jobs"`
 
-	OnlySteps []string `yaml:"only_step"`
-	SkipSteps []string `yaml:"skip_step"`
+	OnlySteps   []string `yaml:"only_step"`
+	SkipSteps   []string `yaml:"skip_step"`
+	UseLocalEnv bool     `yaml:"use_local_env"`
 
 	DryRun  bool   `yaml:"dry_run"`
 	Verbose bool   `yaml:"verbose"`
@@ -105,6 +106,9 @@ func merge(base, override Config) Config {
 	if override.Verbose {
 		out.Verbose = true
 	}
+	if override.UseLocalEnv {
+		out.UseLocalEnv = true
+	}
 
 	if override.Warn.VersionMismatch {
 		out.Warn.VersionMismatch = true
@@ -139,18 +143,22 @@ func ApplyFlags(cfg *Config, flags FlagValues) {
 	if flags.Verbose.Set {
 		cfg.Verbose = flags.Verbose.Value
 	}
+	if flags.UseLocalEnv.Set {
+		cfg.UseLocalEnv = flags.UseLocalEnv.Value
+	}
 }
 
 // FlagValues captures CLI flag state with knowledge of whether each flag was set explicitly.
 type FlagValues struct {
-	Provider  StringFlag
-	Workflows SliceFlag
-	Jobs      SliceFlag
-	OnlySteps SliceFlag
-	SkipSteps SliceFlag
-	Format    StringFlag
-	DryRun    BoolFlag
-	Verbose   BoolFlag
+	Provider    StringFlag
+	Workflows   SliceFlag
+	Jobs        SliceFlag
+	OnlySteps   SliceFlag
+	SkipSteps   SliceFlag
+	Format      StringFlag
+	DryRun      BoolFlag
+	Verbose     BoolFlag
+	UseLocalEnv BoolFlag
 }
 
 // StringFlag represents a string flag and whether it was set.

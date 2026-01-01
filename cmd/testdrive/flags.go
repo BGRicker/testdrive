@@ -75,5 +75,13 @@ func gatherFlags(cmd *cobra.Command) (config.FlagValues, error) {
 		values.Verbose = config.BoolFlag{Value: v, Set: true}
 	}
 
+	if flags.Changed("use-local-env") {
+		v, err := flags.GetBool("use-local-env")
+		if err != nil {
+			return values, fmt.Errorf("parse --use-local-env: %w", err)
+		}
+		values.UseLocalEnv = config.BoolFlag{Value: v, Set: true}
+	}
+
 	return values, nil
 }

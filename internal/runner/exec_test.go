@@ -101,6 +101,115 @@ func TestRunnerEnvMerge(t *testing.T) {
 	}
 }
 
+func TestRunnerUseLocalEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("use local env test requires POSIX shell")
+	}
+	root := t.TempDir()
+
+	// Set up local environment with a test variable
+	localEnv := append(os.Environ(), "LOCAL_VAR=local")
+
+	r := New(Options{
+		Root:        root,
+		UseLocalEnv: true,
+		Env:         localEnv,
+	})
+
+	wf := provider.Workflow{
+		Path: "wf.yml",
+		Name: "wf",
+		Env:  map[string]string{"WF_VAR": "workflow"},
+		Jobs: []provider.Job{
+			{
+				Name:  "job",
+				RawID: "job",
+				Env:   map[string]string{"JOB_VAR": "job"},
+				Steps: []provider.Step{
+					{
+						Name: "step",
+						// Try to access both workflow env and local env
+						Run:  `echo "LOCAL=${LOCAL_VAR:-UNSET} WF=${WF_VAR:-UNSET} JOB=${JOB_VAR:-UNSET} STEP=${STEP_VAR:-UNSET}"`,
+						Env:  map[string]string{"STEP_VAR": "step"},
+					},
+				},
+			},
+		},
+	}
+
+	results, _, err := r.Run([]provider.Workflow{wf})
+	if err != nil {
+		t.Fatalf("runner Run: %v", err)
+	}
+
+	output := results[0].Stdout
+
+	// Local env should be present
+	if !strings.Contains(output, "LOCAL=local") {
+		t.Errorf("expected LOCAL_VAR to be 'local', got output: %q", output)
+	}
+
+	// Workflow/job/step env should be ignored (UNSET)
+	if !strings.Contains(output, "WF=UNSET") {
+		t.Errorf("expected WF_VAR to be UNSET when UseLocalEnv=true, got output: %q", output)
+	}
+	if !strings.Contains(output, "JOB=UNSET") {
+		t.Errorf("expected JOB_VAR to be UNSET when UseLocalEnv=true, got output: %q", output)
+	}
+	if !strings.Contains(output, "STEP=UNSET") {
+		t.Errorf("expected STEP_VAR to be UNSET when UseLocalEnv=true, got output: %q", output)
+	}
+}
+
+func TestRunnerUseLocalEnvFalse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("env test requires POSIX shell")
+	}
+	root := t.TempDir()
+
+	// Set up local environment with a test variable
+	localEnv := append(os.Environ(), "LOCAL_VAR=local")
+
+	r := New(Options{
+		Root:        root,
+		UseLocalEnv: false, // Default behavior - merge environments
+		Env:         localEnv,
+	})
+
+	wf := provider.Workflow{
+		Path: "wf.yml",
+		Name: "wf",
+		Env:  map[string]string{"WF_VAR": "workflow"},
+		Jobs: []provider.Job{
+			{
+				Name:  "job",
+				RawID: "job",
+				Steps: []provider.Step{
+					{
+						Name: "step",
+						Run:  `echo "LOCAL=${LOCAL_VAR:-UNSET} WF=${WF_VAR:-UNSET}"`,
+					},
+				},
+			},
+		},
+	}
+
+	results, _, err := r.Run([]provider.Workflow{wf})
+	if err != nil {
+		t.Fatalf("runner Run: %v", err)
+	}
+
+	output := results[0].Stdout
+
+	// Both local and workflow env should be present
+	if !strings.Contains(output, "LOCAL=local") {
+		t.Errorf("expected LOCAL_VAR to be 'local', got output: %q", output)
+	}
+	if !strings.Contains(output, "WF=workflow") {
+		t.Errorf("expected WF_VAR to be 'workflow' when UseLocalEnv=false, got output: %q", output)
+	}
+}
+
 func TestRunnerWorkingDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("working directory test uses POSIX commands")
