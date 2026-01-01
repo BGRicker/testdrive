@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bgricker/testdrive/internal/provider"
 	"github.com/bgricker/testdrive/internal/report"
@@ -195,9 +197,9 @@ func (s *StreamingPrettyRenderer) InitializeAllJobs(workflows []provider.Workflo
 			}
 
 			workflow.jobs = append(workflow.jobs, jobInfo{
-				name:   job.Name,
-				status: "pending",
-				steps:  make([]stepResult, 0, stepCount),
+				name:    job.Name,
+				status:  "pending",
+				steps:   make([]stepResult, 0, stepCount),
 				printed: false,
 			})
 			jobIdx := len(workflow.jobs) - 1
@@ -408,7 +410,7 @@ func detectRefreshSupport(out io.Writer) bool {
 	if envTerm := os.Getenv("TERM"); envTerm == "" || envTerm == "dumb" {
 		return false
 	}
-	
+
 	// Check if the writer is actually a terminal
 	if f, ok := out.(*os.File); ok {
 		if f != os.Stdout && f != os.Stderr {
@@ -418,13 +420,20 @@ func detectRefreshSupport(out io.Writer) bool {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
 func (s *StreamingPrettyRenderer) render() {
 	if !s.supportsRefresh || len(s.jobOrder) == 0 {
 		return
+	}
+
+	width := 0
+	if f, ok := s.out.(*os.File); ok {
+		if w, _, err := term.GetSize(int(f.Fd())); err == nil {
+			width = w
+		}
 	}
 
 	lines := make([]string, 0, len(s.jobOrder))
@@ -436,30 +445,26 @@ func (s *StreamingPrettyRenderer) render() {
 		}
 	}
 
-	newLineCount := len(lines)
-	maxLines := newLineCount
-	if s.renderedLines > maxLines {
-		maxLines = s.renderedLines
-	}
+	newRowCount := visibleRowCount(lines, width)
 
-	// Move cursor up if we've previously rendered lines
+	// Move cursor up to the start of the previously rendered block.
 	if s.renderedLines > 0 {
-		fmt.Fprintf(s.out, "\033[%dA\r", s.renderedLines)
+		fmt.Fprintf(s.out, "\r\033[%dA", s.renderedLines)
 	}
 
-	// Clear and redraw each line
-	for i := 0; i < maxLines; i++ {
-		fmt.Fprint(s.out, "\r\033[2K") // Clear line
-		if i < newLineCount {
-			fmt.Fprint(s.out, lines[i])
-		}
-		if i < maxLines-1 {
+	// Clear from cursor to end of screen to avoid leftover wrapped lines.
+	fmt.Fprint(s.out, "\r\033[J")
+
+	for i, line := range lines {
+		fmt.Fprint(s.out, "\r")
+		fmt.Fprint(s.out, line)
+		if i < len(lines)-1 {
 			fmt.Fprint(s.out, "\n")
 		}
 	}
 
 	fmt.Fprint(s.out, "\n")
-	s.renderedLines = newLineCount
+	s.renderedLines = newRowCount
 }
 
 // RenderSummary shows the final summary
@@ -492,6 +497,46 @@ func cleanErrorOutput(stderr string) string {
 	// Check if this looks like RSpec output
 	if isRSpecOutput(lines) {
 		return formatRSpecFailures(lines)
+	}
+
+	// Check if this looks like linter output (standard, rubocop, eslint)
+	for _, line := range lines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "offense") ||
+			strings.Contains(lower, "rubocop") ||
+			strings.Contains(lower, "standard") ||
+			strings.Contains(lower, "eslint") ||
+			regexp.MustCompile(`^\s*\d+\)`).MatchString(line) { // Numbered violations
+			// This is linter output - keep only the most actionable lines.
+			var result []string
+			lastPath := ""
+			for _, l := range lines {
+				trimmed := strings.TrimSpace(l)
+				if trimmed == "" {
+					continue
+				}
+				if linterFileLocation.MatchString(trimmed) {
+					result = append(result, trimmed)
+					lastPath = ""
+					continue
+				}
+				if looksLikePath(trimmed) {
+					lastPath = trimmed
+					continue
+				}
+				if eslintLineLocation.MatchString(trimmed) {
+					if lastPath != "" {
+						result = append(result, fmt.Sprintf("%s: %s", lastPath, trimmed))
+						lastPath = ""
+						continue
+					}
+					result = append(result, trimmed)
+				}
+			}
+			if len(result) > 0 {
+				return strings.Join(result, "\n")
+			}
+		}
 	}
 
 	// Otherwise, use the general cleaning logic
@@ -555,6 +600,59 @@ func cleanErrorOutput(stderr string) string {
 	}
 
 	return "Step failed - output suppressed; run with --verbose for full logs"
+}
+
+var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+var linterFileLocation = regexp.MustCompile(`^[^\s].*:\d+:\d+:`)
+var eslintLineLocation = regexp.MustCompile(`\d+:\d+\s+(error|warning)\b`)
+
+func visibleRowCount(lines []string, width int) int {
+	if width <= 0 {
+		return len(lines)
+	}
+
+	total := 0
+	for _, line := range lines {
+		total += rowCountForLine(line, width)
+	}
+	return total
+}
+
+func rowCountForLine(line string, width int) int {
+	if width <= 0 {
+		return 1
+	}
+
+	plain := ansiRegexp.ReplaceAllString(line, "")
+	cols := utf8.RuneCountInString(plain)
+	if cols == 0 {
+		return 1
+	}
+
+	return (cols-1)/width + 1
+}
+
+func looksLikePath(line string) bool {
+	if !strings.Contains(line, "/") {
+		return false
+	}
+	switch {
+	case strings.HasSuffix(line, ".js"),
+		strings.HasSuffix(line, ".jsx"),
+		strings.HasSuffix(line, ".ts"),
+		strings.HasSuffix(line, ".tsx"),
+		strings.HasSuffix(line, ".rb"),
+		strings.HasSuffix(line, ".py"),
+		strings.HasSuffix(line, ".go"),
+		strings.HasSuffix(line, ".css"),
+		strings.HasSuffix(line, ".scss"),
+		strings.HasSuffix(line, ".sass"),
+		strings.HasSuffix(line, ".html"),
+		strings.HasSuffix(line, ".erb"):
+		return true
+	default:
+		return false
+	}
 }
 
 // isRSpecOutput checks if the output looks like RSpec test results
@@ -654,7 +752,23 @@ func formatRSpecFailures(lines []string) string {
 		return strings.Join(result, "\n")
 	}
 
-	// Summarize failures we parsed, keeping it concise
+	// If we couldn't parse failures, return the raw output
+	// (better to show everything than hide errors)
+	var rawOutput []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" &&
+			!strings.Contains(line, "Bash implementation") &&
+			!strings.Contains(line, "Migration guide") &&
+			!strings.Contains(line, "parser/current is loading parser") {
+			rawOutput = append(rawOutput, line)
+		}
+	}
+
+	if len(rawOutput) > 0 {
+		return strings.Join(rawOutput, "\n")
+	}
+
 	return "RSpec tests failed"
 }
 
@@ -728,4 +842,3 @@ func formatDuration(d time.Duration) string {
 	}
 	return d.Truncate(time.Millisecond).String()
 }
-

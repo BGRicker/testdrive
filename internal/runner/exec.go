@@ -18,6 +18,7 @@ import (
 	"github.com/bgricker/testdrive/internal/output"
 	"github.com/bgricker/testdrive/internal/provider"
 	"github.com/bgricker/testdrive/internal/report"
+	"github.com/bgricker/testdrive/internal/smartfilter"
 )
 
 // Options configure how the runner executes steps.
@@ -38,6 +39,9 @@ type Options struct {
 	UseLocalEnv        bool     // If true, ignore workflow env variables and use only local environment
 	AutoFix            bool     // If true, transform lint commands to auto-fix mode
 	AutoFixRules       []config.AutoFixRule
+	SmartFilter        bool     // If true, only run tests related to changed files
+	SmartFilterFiles   []string // List of test files to run when SmartFilter is enabled
+	SmartFilterChanged []string // List of actual changed files (for linters)
 }
 
 // Runner executes workflow steps sequentially.
@@ -262,6 +266,18 @@ func (r *Runner) runStep(ctx context.Context, wf provider.Workflow, job provider
 	// Apply auto-fix transformations if enabled
 	if r.opts.AutoFix && len(r.opts.AutoFixRules) > 0 {
 		step.Run = applyAutoFixRules(step.Run, r.opts.AutoFixRules)
+	}
+
+	// Apply smart filtering if enabled
+	if r.opts.SmartFilter {
+		// Use changed files for linters, test files for tests
+		filesToUse := r.opts.SmartFilterFiles
+		if smartfilter.IsLinterCommand(step.Run) && len(r.opts.SmartFilterChanged) > 0 {
+			filesToUse = r.opts.SmartFilterChanged
+		}
+		if len(filesToUse) > 0 {
+			step.Run = smartfilter.FormatTestCommand(step.Run, filesToUse, r.opts.Root)
+		}
 	}
 
 	// Auto-detect: if job has services, use local env (since testdrive can't run services)

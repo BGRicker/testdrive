@@ -91,5 +91,13 @@ func gatherFlags(cmd *cobra.Command) (config.FlagValues, error) {
 		values.AutoFix = config.BoolFlag{Value: v, Set: true}
 	}
 
+	if flags.Changed("smart-filter") {
+		v, err := flags.GetBool("smart-filter")
+		if err != nil {
+			return values, fmt.Errorf("parse --smart-filter: %w", err)
+		}
+		values.SmartFilter = config.BoolFlag{Value: v, Set: true}
+	}
+
 	return values, nil
 }
