@@ -500,42 +500,35 @@ func cleanErrorOutput(stderr string) string {
 	}
 
 	// Check if this looks like linter output (standard, rubocop, eslint)
-	for _, line := range lines {
-		lower := strings.ToLower(line)
-		if strings.Contains(lower, "offense") ||
-			strings.Contains(lower, "rubocop") ||
-			strings.Contains(lower, "standard") ||
-			strings.Contains(lower, "eslint") ||
-			numberedViolation.MatchString(line) { // Numbered violations
-			// This is linter output - keep only the most actionable lines.
-			var result []string
-			lastPath := ""
-			for _, l := range lines {
-				trimmed := strings.TrimSpace(l)
-				if trimmed == "" {
-					continue
-				}
-				if linterFileLocation.MatchString(trimmed) {
-					result = append(result, trimmed)
+	if isLinterOutput(lines) {
+		// Keep only the most actionable lines.
+		var result []string
+		lastPath := ""
+		for _, l := range lines {
+			trimmed := strings.TrimSpace(l)
+			if trimmed == "" {
+				continue
+			}
+			if linterFileLocation.MatchString(trimmed) {
+				result = append(result, trimmed)
+				lastPath = ""
+				continue
+			}
+			if looksLikePath(trimmed) {
+				lastPath = trimmed
+				continue
+			}
+			if eslintLineLocation.MatchString(trimmed) {
+				if lastPath != "" {
+					result = append(result, fmt.Sprintf("%s: %s", lastPath, trimmed))
 					lastPath = ""
 					continue
 				}
-				if looksLikePath(trimmed) {
-					lastPath = trimmed
-					continue
-				}
-				if eslintLineLocation.MatchString(trimmed) {
-					if lastPath != "" {
-						result = append(result, fmt.Sprintf("%s: %s", lastPath, trimmed))
-						lastPath = ""
-						continue
-					}
-					result = append(result, trimmed)
-				}
+				result = append(result, trimmed)
 			}
-			if len(result) > 0 {
-				return strings.Join(result, "\n")
-			}
+		}
+		if len(result) > 0 {
+			return strings.Join(result, "\n")
 		}
 	}
 
@@ -605,7 +598,6 @@ func cleanErrorOutput(stderr string) string {
 var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 var linterFileLocation = regexp.MustCompile(`^[^\s].*:\d+:\d+:`)
 var eslintLineLocation = regexp.MustCompile(`\d+:\d+\s+(error|warning)\b`)
-var numberedViolation = regexp.MustCompile(`^\s*\d+\)`)
 
 func visibleRowCount(lines []string, width int) int {
 	if width <= 0 {
@@ -631,6 +623,26 @@ func rowCountForLine(line string, width int) int {
 	}
 
 	return (cols-1)/width + 1
+}
+
+func isLinterOutput(lines []string) bool {
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if linterFileLocation.MatchString(trimmed) || eslintLineLocation.MatchString(trimmed) {
+			return true
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "offense") ||
+			strings.Contains(lower, "rubocop") ||
+			strings.Contains(lower, "standard") ||
+			strings.Contains(lower, "eslint") {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikePath(line string) bool {

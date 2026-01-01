@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -218,7 +219,7 @@ func TestWatcher_Debouncing(t *testing.T) {
 
 	// Create multiple files quickly (should be debounced into one notification)
 	for i := 0; i < 5; i++ {
-		testFile := filepath.Join(tmpDir, "test"+string(rune('0'+i))+".txt")
+		testFile := filepath.Join(tmpDir, "test"+strconv.Itoa(i)+".txt")
 		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
 			t.Fatalf("WriteFile() error = %v", err)
 		}

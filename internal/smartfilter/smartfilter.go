@@ -148,50 +148,80 @@ func mapDirectory(sourceDir string, rule config.SmartFilterRule) string {
 
 	// Python conventions
 	if rule.TestPattern != "" && strings.Contains(rule.TestPattern, "test_") {
-		// Python tests often in tests/ directory
-		return strings.Replace(sourceDir, "src/", "tests/", 1)
+		// Python tests are often in a tests/ directory mirroring source layout.
+		if strings.HasPrefix(sourceDir, "tests/") {
+			return sourceDir
+		}
+		if strings.HasPrefix(sourceDir, "src/") {
+			return strings.Replace(sourceDir, "src/", "tests/", 1)
+		}
+		if strings.HasPrefix(sourceDir, "lib/") {
+			return strings.Replace(sourceDir, "lib/", "tests/lib/", 1)
+		}
+		return filepath.Join("tests", sourceDir)
 	}
 
 	return sourceDir
 }
 
 // findTestsByPattern finds test files matching a pattern relative to the source file.
-func findTestsByPattern(root, sourcePath, pattern string) []string {
+func findTestsByPattern(root, _ string, pattern string) []string {
 	var results []string
 
-	// Walk the repository to find matching test files
-	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			return nil
-		}
+	matches, err := doublestar.Glob(os.DirFS(root), pattern)
+	if err != nil {
+		return results
+	}
 
-		relPath, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil
+	for _, relPath := range matches {
+		if !isTestFile(relPath) {
+			continue
 		}
-
-		matched, err := doublestar.Match(pattern, relPath)
-		if err == nil && matched && isTestFile(relPath) {
-			results = append(results, path)
-		}
-
-		return nil
-	})
+		results = append(results, filepath.Join(root, relPath))
+	}
 
 	return results
 }
 
 // IsLinterCommand checks if a command is a linter (not a test).
 func IsLinterCommand(command string) bool {
-	lower := strings.ToLower(command)
-	return strings.Contains(lower, "standard") ||
-		strings.Contains(lower, "rubocop") ||
-		strings.Contains(lower, "eslint") ||
-		strings.Contains(lower, "yarn lint") ||
-		strings.Contains(lower, "npm run lint")
+	lower := strings.ToLower(strings.TrimSpace(command))
+	if lower == "" {
+		return false
+	}
+
+	tokens := strings.Fields(lower)
+	hasStandard := false
+	hasRubocop := false
+	hasEslint := false
+	for _, tok := range tokens {
+		if isLinterToken(tok, "standard") || isLinterToken(tok, "standardrb") {
+			hasStandard = true
+		}
+		if isLinterToken(tok, "rubocop") {
+			hasRubocop = true
+		}
+		if isLinterToken(tok, "eslint") {
+			hasEslint = true
+		}
+	}
+
+	hasYarnLint := strings.HasPrefix(lower, "yarn lint") || strings.HasPrefix(lower, "yarn run lint")
+	hasNpmLint := strings.HasPrefix(lower, "npm run lint")
+
+	return hasStandard || hasRubocop || hasEslint || hasYarnLint || hasNpmLint
+}
+
+func isLinterToken(token, name string) bool {
+	if token == name {
+		return true
+	}
+
+	lastSlash := strings.LastIndexAny(token, "/\\")
+	if lastSlash != -1 && lastSlash+1 < len(token) {
+		return token[lastSlash+1:] == name
+	}
+	return false
 }
 
 // FormatTestCommand modifies a test command to only run specific test files.
@@ -245,10 +275,15 @@ func FormatTestCommand(originalCommand string, testFiles []string, root string) 
 
 	filesStr := strings.Join(relPaths, " ")
 
-	// Rails db:setup spec - in watch mode, skip db:setup and just run rspec
-	// This assumes DB is already set up (which is true in watch mode after first run)
-	if strings.Contains(lower, "db:setup") && strings.Contains(lower, "spec") {
-		// Transform "bin/rails db:setup spec" to "bundle exec rspec <files>"
+	// Rails db:setup spec - in watch mode, skip db:setup and just run rspec.
+	// Restrict to simple invocations to avoid dropping db:setup in compound commands.
+	if strings.Contains(lower, "rails") &&
+		strings.Contains(lower, "db:setup") &&
+		(strings.Contains(lower, " spec") || strings.HasSuffix(lower, "spec")) &&
+		!strings.Contains(lower, "rspec") &&
+		!strings.Contains(lower, "&&") &&
+		!strings.Contains(lower, ";") &&
+		!strings.Contains(lower, "|") {
 		return "bundle exec rspec " + filesStr
 	}
 
