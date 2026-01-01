@@ -450,7 +450,8 @@ func TestApplyAutoFixRules(t *testing.T) {
 					AddFlags: []string{"--fix"},
 				},
 			},
-			// Should NOT match because we use word boundaries
+			// "standard" pattern should NOT match "standardrb" due to word boundaries
+			// Testing with single rule to verify boundary logic (actual config has both patterns)
 			expected: "bundle exec standardrb",
 		},
 		{
@@ -464,6 +465,29 @@ func TestApplyAutoFixRules(t *testing.T) {
 				},
 			},
 			expected: "rubocop src/ -A",
+		},
+		{
+			name:    "flag in middle of command",
+			command: "rubocop --parallel --format json src/",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:     "rubocop",
+					RemoveFlags: []string{"--parallel"},
+					AddFlags:    []string{"-A"},
+				},
+			},
+			expected: "rubocop --format json src/ -A",
+		},
+		{
+			name:    "black check mode to auto-format",
+			command: "black --check src/",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:     "black",
+					RemoveFlags: []string{"--check"},
+				},
+			},
+			expected: "black src/",
 		},
 	}
 

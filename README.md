@@ -106,6 +106,7 @@ $ testdrive run --auto-fix
 | `prettier --check` | `prettier --write` |
 | `eslint` | `eslint --fix` |
 | `ruff check` | `ruff check --fix` |
+| `black --check` | `black` |
 
 **Custom transformations** can be configured in `.testdrive.yml`:
 

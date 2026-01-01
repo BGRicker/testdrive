@@ -597,9 +597,12 @@ func applyAutoFixRules(command string, rules []config.AutoFixRule) string {
 			if flag == "" {
 				continue
 			}
-			// Remove the flag with optional surrounding whitespace (handles flags at start)
-			flagPattern := regexp.MustCompile(`\s*` + regexp.QuoteMeta(flag) + `\b`)
-			result = flagPattern.ReplaceAllString(result, "")
+			// Remove flag at start of command (flag + any trailing whitespace)
+			startPattern := regexp.MustCompile(`^` + regexp.QuoteMeta(flag) + `\s+`)
+			result = startPattern.ReplaceAllString(result, "")
+			// Remove flag in middle/end (preceding whitespace + flag)
+			midPattern := regexp.MustCompile(`\s+` + regexp.QuoteMeta(flag) + `\b`)
+			result = midPattern.ReplaceAllString(result, "")
 		}
 
 		// Add flags at the end
