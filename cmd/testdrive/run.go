@@ -48,6 +48,8 @@ func runExecute(cmd *cobra.Command, args []string) error {
 		PrivilegedPatterns: append([]string{}, cfg.PrivilegedCommandPatterns...),
 		SkipSteps:          append([]string{}, cfg.SkipSteps...),
 		UseLocalEnv:        cfg.UseLocalEnv,
+		AutoFix:            cfg.AutoFix,
+		AutoFixRules:       append([]config.AutoFixRule{}, cfg.AutoFixRules...),
 	}
 
     	// Enable streaming for pretty format when not verbose and not dry-run

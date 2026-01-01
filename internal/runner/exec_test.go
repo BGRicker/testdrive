@@ -8,7 +8,8 @@ import (
 	"strings"
 	"testing"
 
-    "github.com/bgricker/testdrive/internal/provider"
+	"github.com/bgricker/testdrive/internal/config"
+	"github.com/bgricker/testdrive/internal/provider"
 )
 
 func TestRunnerDryRun(t *testing.T) {
@@ -334,4 +335,212 @@ func pwdCommand() string {
 		return "cd"
 	}
 	return "pwd"
+}
+
+func TestApplyAutoFixRules(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  string
+		rules    []config.AutoFixRule
+		expected string
+	}{
+		{
+			name:    "rubocop with parallel flag",
+			command: "bundle exec rubocop --parallel",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:     "rubocop",
+					RemoveFlags: []string{"--parallel"},
+					AddFlags:    []string{"-A"},
+				},
+			},
+			expected: "bundle exec rubocop -A",
+		},
+		{
+			name:    "rubocop without parallel flag",
+			command: "bundle exec rubocop",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:     "rubocop",
+					RemoveFlags: []string{"--parallel"},
+					AddFlags:    []string{"-A"},
+				},
+			},
+			expected: "bundle exec rubocop -A",
+		},
+		{
+			name:    "standard with fix flag",
+			command: "bundle exec standard",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:  "standard",
+					AddFlags: []string{"--fix"},
+				},
+			},
+			expected: "bundle exec standard --fix",
+		},
+		{
+			name:    "prettier check to write",
+			command: "prettier --check src/**/*.js",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:     "prettier",
+					RemoveFlags: []string{"--check"},
+					AddFlags:    []string{"--write"},
+				},
+			},
+			expected: "prettier src/**/*.js --write",
+		},
+		{
+			name:    "complete replacement",
+			command: "yarn lint",
+			rules: []config.AutoFixRule{
+				{
+					Pattern: "yarn lint",
+					Replace: "yarn fix:prettier",
+				},
+			},
+			expected: "yarn fix:prettier",
+		},
+		{
+			name:    "no matching rule",
+			command: "npm test",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:  "rubocop",
+					AddFlags: []string{"-A"},
+				},
+			},
+			expected: "npm test",
+		},
+		{
+			name:    "eslint with fix",
+			command: "eslint src/",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:  "eslint",
+					AddFlags: []string{"--fix"},
+				},
+			},
+			expected: "eslint src/ --fix",
+		},
+		{
+			name:    "ruff check with fix",
+			command: "ruff check .",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:  "ruff check",
+					AddFlags: []string{"--fix"},
+				},
+			},
+			expected: "ruff check . --fix",
+		},
+		{
+			name:    "empty rules",
+			command: "bundle exec rubocop",
+			rules:   []config.AutoFixRule{},
+			expected: "bundle exec rubocop",
+		},
+		{
+			name:    "word boundary prevents partial match",
+			command: "bundle exec standardrb",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:  "standard",
+					AddFlags: []string{"--fix"},
+				},
+			},
+			// "standard" pattern should NOT match "standardrb" due to word boundaries
+			// Testing with single rule to verify boundary logic (actual config has both patterns)
+			expected: "bundle exec standardrb",
+		},
+		{
+			name:    "flag at start of command",
+			command: "--parallel rubocop src/",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:     "rubocop",
+					RemoveFlags: []string{"--parallel"},
+					AddFlags:    []string{"-A"},
+				},
+			},
+			expected: "rubocop src/ -A",
+		},
+		{
+			name:    "flag in middle of command",
+			command: "rubocop --parallel --format json src/",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:     "rubocop",
+					RemoveFlags: []string{"--parallel"},
+					AddFlags:    []string{"-A"},
+				},
+			},
+			expected: "rubocop --format json src/ -A",
+		},
+		{
+			name:    "black check mode to auto-format",
+			command: "black --check src/",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:     "black",
+					RemoveFlags: []string{"--check"},
+				},
+			},
+			expected: "black src/",
+		},
+		{
+			name:    "rails standard task to fix task",
+			command: "bin/rails standard",
+			rules: []config.AutoFixRule{
+				{
+					Pattern: "bin/rails standard",
+					Replace: "bin/rails standard:fix",
+				},
+			},
+			expected: "bin/rails standard:fix",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := applyAutoFixRules(tt.command, tt.rules)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestRunnerAutoFix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("auto-fix test requires POSIX shell")
+	}
+	root := t.TempDir()
+
+	r := New(Options{
+		Root:    root,
+		AutoFix: true,
+		AutoFixRules: []config.AutoFixRule{
+			{
+				Pattern:  "echo test",
+				Replace:  "echo fixed",
+			},
+		},
+	})
+
+	wf := sampleWorkflow("echo test")
+
+	results, _, err := r.Run([]provider.Workflow{wf})
+	if err != nil {
+		t.Fatalf("runner Run: %v", err)
+	}
+
+	// Should have executed "echo fixed" instead of "echo test"
+	if !strings.Contains(results[0].Stdout, "fixed") {
+		t.Errorf("expected 'fixed' in output, got: %q", results[0].Stdout)
+	}
+	if strings.Contains(results[0].Stdout, "test") {
+		t.Errorf("expected command to be transformed to 'echo fixed', but output contains 'test': %q", results[0].Stdout)
+	}
 }

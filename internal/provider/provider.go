@@ -31,11 +31,12 @@ type Defaults struct {
 
 // Job represents a GitHub Actions job with resolved steps.
 type Job struct {
-	Name     string            `json:"name"`
-	RawID    string            `json:"id"`
-	Env      map[string]string `json:"env,omitempty"`
-	Defaults Defaults          `json:"defaults"`
-	Steps    []Step            `json:"steps"`
+	Name        string            `json:"name"`
+	RawID       string            `json:"id"`
+	Env         map[string]string `json:"env,omitempty"`
+	Defaults    Defaults          `json:"defaults"`
+	Steps       []Step            `json:"steps"`
+	HasServices bool              `json:"has_services,omitempty"` // True if job defines services (which testdrive can't run)
 }
 
 // Step represents an individual GitHub Actions workflow step.

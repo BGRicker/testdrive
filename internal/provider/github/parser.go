@@ -97,10 +97,11 @@ func decodeWorkflow(r io.Reader, displayPath string) (provider.Workflow, []provi
 		}
 
 		if jobDoc.Services != nil {
+			job.HasServices = true
 			warnings = append(warnings, provider.Warning{
 				Workflow: displayPath,
 				Job:      jobID,
-				Message:  "services are not supported",
+				Message:  "services are not supported; automatically using local environment instead of workflow env",
 			})
 		}
 		if jobDoc.Strategy.Matrix != nil {

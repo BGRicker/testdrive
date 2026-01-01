@@ -14,9 +14,10 @@ import (
 	"strings"
 	"time"
 
-    "github.com/bgricker/testdrive/internal/output"
-    "github.com/bgricker/testdrive/internal/provider"
-    "github.com/bgricker/testdrive/internal/report"
+	"github.com/bgricker/testdrive/internal/config"
+	"github.com/bgricker/testdrive/internal/output"
+	"github.com/bgricker/testdrive/internal/provider"
+	"github.com/bgricker/testdrive/internal/report"
 )
 
 // Options configure how the runner executes steps.
@@ -35,6 +36,8 @@ type Options struct {
 	StreamingRenderer  output.StreamingRenderer
 	SkipSteps          []string // Step name patterns to skip (supports wildcards)
 	UseLocalEnv        bool     // If true, ignore workflow env variables and use only local environment
+	AutoFix            bool     // If true, transform lint commands to auto-fix mode
+	AutoFixRules       []config.AutoFixRule
 }
 
 // Runner executes workflow steps sequentially.
@@ -256,8 +259,16 @@ func (r *Runner) runBatch(workflows []provider.Workflow) ([]report.StepResult, r
 }
 
 func (r *Runner) runStep(ctx context.Context, wf provider.Workflow, job provider.Job, step provider.Step, result *report.StepResult) error {
+	// Apply auto-fix transformations if enabled
+	if r.opts.AutoFix && len(r.opts.AutoFixRules) > 0 {
+		step.Run = applyAutoFixRules(step.Run, r.opts.AutoFixRules)
+	}
+
+	// Auto-detect: if job has services, use local env (since testdrive can't run services)
+	useLocalEnv := r.opts.UseLocalEnv || job.HasServices
+
 	var env []string
-	if r.opts.UseLocalEnv {
+	if useLocalEnv {
 		// Use only local environment, ignore workflow/job/step env variables
 		env = r.opts.Env
 	} else {
@@ -559,4 +570,58 @@ func DefaultPrivilegedPatterns() []string {
 		`(?i)\bnpm\s+install\s+-g`,     // npm install -g (can require sudo)
 		`(?i)\byarn\s+global`,          // yarn global (can require sudo)
 	}
+}
+
+// applyAutoFixRules transforms a command for auto-fixing based on configured rules.
+// Only the first matching rule is applied.
+func applyAutoFixRules(command string, rules []config.AutoFixRule) string {
+	for _, rule := range rules {
+		if rule.Pattern == "" {
+			continue
+		}
+
+		// Check if command matches this rule's pattern using word boundaries
+		pattern := `\b` + regexp.QuoteMeta(rule.Pattern) + `\b`
+		matched, err := regexp.MatchString(pattern, command)
+		if err != nil || !matched {
+			continue
+		}
+
+		// If Replace is set, use complete replacement
+		if rule.Replace != "" {
+			return rule.Replace
+		}
+
+		// Otherwise, apply flag transformations
+		result := command
+
+		// Remove flags (just the flag itself, not arguments)
+		for _, flag := range rule.RemoveFlags {
+			if flag == "" {
+				continue
+			}
+			// Remove flag at start of command (flag + any trailing whitespace)
+			startPattern := regexp.MustCompile(`^` + regexp.QuoteMeta(flag) + `\s+`)
+			result = startPattern.ReplaceAllString(result, "")
+			// Remove flag in middle/end (preceding whitespace + flag)
+			midPattern := regexp.MustCompile(`\s+` + regexp.QuoteMeta(flag) + `\b`)
+			result = midPattern.ReplaceAllString(result, "")
+		}
+
+		// Add flags at the end
+		for _, flag := range rule.AddFlags {
+			if flag == "" {
+				continue
+			}
+			// Only add if flag isn't already present (using word boundaries)
+			flagPattern := `\b` + regexp.QuoteMeta(flag) + `\b`
+			if matched, _ := regexp.MatchString(flagPattern, result); !matched {
+				result = strings.TrimSpace(result) + " " + flag
+			}
+		}
+
+		return strings.TrimSpace(result)
+	}
+
+	return command
 }

@@ -83,5 +83,13 @@ func gatherFlags(cmd *cobra.Command) (config.FlagValues, error) {
 		values.UseLocalEnv = config.BoolFlag{Value: v, Set: true}
 	}
 
+	if flags.Changed("auto-fix") {
+		v, err := flags.GetBool("auto-fix")
+		if err != nil {
+			return values, fmt.Errorf("parse --auto-fix: %w", err)
+		}
+		values.AutoFix = config.BoolFlag{Value: v, Set: true}
+	}
+
 	return values, nil
 }

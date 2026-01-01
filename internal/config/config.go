@@ -23,8 +23,19 @@ type Config struct {
 	Verbose bool   `yaml:"verbose"`
 	Format  string `yaml:"format"`
 
+	AutoFix      bool           `yaml:"auto_fix"`
+	AutoFixRules []AutoFixRule  `yaml:"auto_fix_rules"`
+
 	Warn                      WarnConfig `yaml:"warn"`
 	PrivilegedCommandPatterns []string   `yaml:"privileged_command_patterns"`
+}
+
+// AutoFixRule defines how to transform a command for auto-fixing.
+type AutoFixRule struct {
+	Pattern     string   `yaml:"pattern"`      // Pattern to match in command (uses word boundaries)
+	RemoveFlags []string `yaml:"remove_flags"` // Flags to remove (e.g., "--parallel", "--check")
+	AddFlags    []string `yaml:"add_flags"`    // Flags to add (e.g., "-A", "--fix")
+	Replace     string   `yaml:"replace"`      // If set, replaces entire command (ignores flag operations)
 }
 
 // WarnConfig controls additional warning behaviour.
@@ -35,10 +46,55 @@ type WarnConfig struct {
 // Default returns the baseline configuration used when no flags or config file specify values.
 func Default() Config {
 	return Config{
-		Provider: ProviderAuto,
-		Format:   FormatPretty,
+		Provider:     ProviderAuto,
+		Format:       FormatPretty,
+		AutoFixRules: DefaultAutoFixRules(),
 		Warn: WarnConfig{
 			VersionMismatch: true,
+		},
+	}
+}
+
+// DefaultAutoFixRules returns sensible auto-fix transformations for common linting tools.
+// More specific patterns should come first to avoid partial matches.
+func DefaultAutoFixRules() []AutoFixRule {
+	return []AutoFixRule{
+		{
+			Pattern:     "rubocop",
+			RemoveFlags: []string{"--parallel"},
+			AddFlags:    []string{"-A"},
+		},
+		{
+			// Rails standard task - must come before generic "standard" rule
+			Pattern: "bin/rails standard",
+			Replace: "bin/rails standard:fix",
+		},
+		{
+			// More specific pattern first to avoid matching "standard"
+			Pattern:  "standardrb",
+			AddFlags: []string{"--fix"},
+		},
+		{
+			Pattern:  "standard",
+			AddFlags: []string{"--fix"},
+		},
+		{
+			Pattern:     "prettier",
+			RemoveFlags: []string{"--check"},
+			AddFlags:    []string{"--write"},
+		},
+		{
+			Pattern:  "eslint",
+			AddFlags: []string{"--fix"},
+		},
+		{
+			Pattern:  "ruff check",
+			AddFlags: []string{"--fix"},
+		},
+		{
+			// Black auto-formats by default, but --check mode only checks
+			Pattern:     "black",
+			RemoveFlags: []string{"--check"},
 		},
 	}
 }
@@ -109,6 +165,13 @@ func merge(base, override Config) Config {
 	if override.UseLocalEnv {
 		out.UseLocalEnv = true
 	}
+	if override.AutoFix {
+		out.AutoFix = true
+	}
+	if override.AutoFixRules != nil {
+		// User-provided rules completely replace defaults (even if empty list)
+		out.AutoFixRules = append([]AutoFixRule{}, override.AutoFixRules...)
+	}
 
 	if override.Warn.VersionMismatch {
 		out.Warn.VersionMismatch = true
@@ -146,6 +209,9 @@ func ApplyFlags(cfg *Config, flags FlagValues) {
 	if flags.UseLocalEnv.Set {
 		cfg.UseLocalEnv = flags.UseLocalEnv.Value
 	}
+	if flags.AutoFix.Set {
+		cfg.AutoFix = flags.AutoFix.Value
+	}
 }
 
 // FlagValues captures CLI flag state with knowledge of whether each flag was set explicitly.
@@ -159,6 +225,7 @@ type FlagValues struct {
 	DryRun      BoolFlag
 	Verbose     BoolFlag
 	UseLocalEnv BoolFlag
+	AutoFix     BoolFlag
 }
 
 // StringFlag represents a string flag and whether it was set.

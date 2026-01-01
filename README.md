@@ -32,6 +32,9 @@ $ testdrive run --use-local-env
 # Skip specific steps (e.g., database setup when you already have a working DB)
 $ testdrive run --skip-step "Set up database"
 
+# Transform lint commands to auto-fix mode
+$ testdrive run --auto-fix
+
 # Allow privileged commands (e.g., sudo/apt-get) when absolutely necessary
 $ TESTDRIVE_ALLOW_PRIVILEGED=1 testdrive run
 ```
@@ -72,17 +75,66 @@ Testdrive automatically inherits your shell environment and supports version man
 
 ### Local Environment Mode
 
-When your local environment is already configured (e.g., database credentials in `.env`, shell variables), use `--use-local-env` to ignore workflow-defined environment variables:
+Testdrive intelligently handles environment variables to make local testing seamless:
+
+**Smart Auto-Detection:**
+When your workflow defines `services:` (like PostgreSQL, Redis, etc.), testdrive **automatically uses your local environment** instead of workflow env variables. This happens because testdrive can't run services containers, so the workflow's env vars (pointing to non-existent services) won't work anyway.
 
 ```bash
-# Use your local DATABASE_URL instead of the workflow's hardcoded postgres credentials
+# If your workflow has services:, local env is used automatically!
+$ testdrive run
+# Warning shown: "services are not supported; automatically using local environment instead"
+```
+
+**Manual Override:**
+You can explicitly control environment behavior:
+
+```bash
+# Force local env (even without services)
 $ testdrive run --use-local-env
+
+# Or configure it permanently in .testdrive.yml:
+use_local_env: true
 ```
 
 This is particularly useful when:
 - Your workflow defines CI-specific database connections (like `postgres:postgres@localhost`)
 - You have local credentials in `.env` files or shell environment
-- Your workflow uses GitHub Actions `services:` (which testdrive doesn't support)
+- You want consistent behavior across all workflows
+
+### Auto-Fix Mode
+
+When developing locally, you often want linters to automatically fix issues rather than just report them. Use `--auto-fix` to transform lint commands to their auto-fix variants:
+
+```bash
+# Automatically transforms common linting tools to fix mode
+$ testdrive run --auto-fix
+```
+
+**Built-in transformations:**
+
+| Original Command | Transformed Command |
+|-----------------|---------------------|
+| `rubocop --parallel` | `rubocop -A` |
+| `bin/rails standard` | `bin/rails standard:fix` |
+| `standard` | `standard --fix` |
+| `standardrb` | `standardrb --fix` |
+| `prettier --check` | `prettier --write` |
+| `eslint` | `eslint --fix` |
+| `ruff check` | `ruff check --fix` |
+| `black --check` | `black` |
+
+**Custom transformations** can be configured in `.testdrive.yml`:
+
+```yaml
+auto_fix: true  # Enable by default
+auto_fix_rules:
+  - pattern: 'yarn lint'
+    replace: 'yarn fix:prettier'
+  - pattern: 'custom-linter'
+    remove_flags: ['--strict']
+    add_flags: ['--fix']
+```
 
 ## Configuration
 
@@ -100,6 +152,10 @@ skip_step:
   - "Upload artifact"
   - "Set up database schema"  # Skip DB setup if you already have a working database
 use_local_env: false      # Set to true to ignore workflow env variables
+auto_fix: false           # Set to true to transform lint commands to auto-fix mode
+auto_fix_rules:           # Custom auto-fix transformations (replaces defaults if provided)
+  - pattern: 'yarn lint'
+    replace: 'yarn fix:prettier'
 dry_run: false
 verbose: false
 format: pretty             # pretty|json
