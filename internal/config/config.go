@@ -23,12 +23,12 @@ type Config struct {
 	Verbose bool   `yaml:"verbose"`
 	Format  string `yaml:"format"`
 
-	AutoFix      bool           `yaml:"auto_fix"`
-	AutoFixRules []AutoFixRule  `yaml:"auto_fix_rules"`
+	AutoFix      bool          `yaml:"auto_fix"`
+	AutoFixRules []AutoFixRule `yaml:"auto_fix_rules"`
 
 	Watch WatchConfig `yaml:"watch"`
 
-	SmartFilter   bool              `yaml:"smart_filter"`
+	SmartFilter      bool              `yaml:"smart_filter"`
 	SmartFilterRules []SmartFilterRule `yaml:"smart_filter_rules"`
 
 	Warn                      WarnConfig `yaml:"warn"`
@@ -211,7 +211,7 @@ const (
 // Load reads .testdrive.yml from the repository root when present. Missing files are ignored.
 func Load(root string) (Config, error) {
 	cfg := Default()
-    path := filepath.Join(root, ".testdrive.yml")
+	path := filepath.Join(root, ".testdrive.yml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -225,11 +225,35 @@ func Load(root string) (Config, error) {
 		return cfg, fmt.Errorf("parse config %q: %w", path, err)
 	}
 
-	cfg = merge(cfg, fileCfg)
+	meta := parseConfigMeta(data)
+	cfg = merge(cfg, fileCfg, meta)
 	return cfg, nil
 }
 
-func merge(base, override Config) Config {
+type configMeta struct {
+	watchFields map[string]bool
+}
+
+func parseConfigMeta(data []byte) configMeta {
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return configMeta{}
+	}
+
+	watchRaw, ok := raw["watch"].(map[string]any)
+	if !ok {
+		return configMeta{}
+	}
+
+	fields := make(map[string]bool, len(watchRaw))
+	for key := range watchRaw {
+		fields[key] = true
+	}
+
+	return configMeta{watchFields: fields}
+}
+
+func merge(base, override Config, meta configMeta) Config {
 	out := base
 
 	if override.Provider != "" {
@@ -275,6 +299,21 @@ func merge(base, override Config) Config {
 	if override.SmartFilterRules != nil {
 		// User-provided rules completely replace defaults (even if empty list)
 		out.SmartFilterRules = append([]SmartFilterRule{}, override.SmartFilterRules...)
+	}
+
+	if len(meta.watchFields) > 0 {
+		if meta.watchFields["debounce_ms"] {
+			out.Watch.DebounceMS = override.Watch.DebounceMS
+		}
+		if meta.watchFields["clear_on_run"] {
+			out.Watch.ClearOnRun = override.Watch.ClearOnRun
+		}
+		if meta.watchFields["ignore_patterns"] {
+			out.Watch.IgnorePatterns = append([]string{}, override.Watch.IgnorePatterns...)
+		}
+		if meta.watchFields["include_patterns"] {
+			out.Watch.IncludePatterns = append([]string{}, override.Watch.IncludePatterns...)
+		}
 	}
 
 	if override.Warn.VersionMismatch {

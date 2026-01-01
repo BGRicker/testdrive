@@ -506,7 +506,7 @@ func cleanErrorOutput(stderr string) string {
 			strings.Contains(lower, "rubocop") ||
 			strings.Contains(lower, "standard") ||
 			strings.Contains(lower, "eslint") ||
-			regexp.MustCompile(`^\s*\d+\)`).MatchString(line) { // Numbered violations
+			numberedViolation.MatchString(line) { // Numbered violations
 			// This is linter output - keep only the most actionable lines.
 			var result []string
 			lastPath := ""
@@ -605,6 +605,7 @@ func cleanErrorOutput(stderr string) string {
 var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 var linterFileLocation = regexp.MustCompile(`^[^\s].*:\d+:\d+:`)
 var eslintLineLocation = regexp.MustCompile(`\d+:\d+\s+(error|warning)\b`)
+var numberedViolation = regexp.MustCompile(`^\s*\d+\)`)
 
 func visibleRowCount(lines []string, width int) int {
 	if width <= 0 {

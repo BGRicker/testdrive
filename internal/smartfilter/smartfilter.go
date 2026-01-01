@@ -252,8 +252,8 @@ func FormatTestCommand(originalCommand string, testFiles []string, root string) 
 		return "bundle exec rspec " + filesStr
 	}
 
-	// RSpec (Rails)
-	if strings.Contains(lower, "rspec") || strings.Contains(lower, "bundle exec rspec") {
+	// RSpec (Rails) - matches both `rspec` and `bundle exec rspec`.
+	if strings.Contains(lower, "rspec") {
 		// Replace generic "spec" with specific files
 		if strings.Contains(originalCommand, " spec") || strings.HasSuffix(originalCommand, "spec") {
 			return strings.Replace(originalCommand, " spec", " "+filesStr, 1)
@@ -266,11 +266,23 @@ func FormatTestCommand(originalCommand string, testFiles []string, root string) 
 		// Extract package paths from test files
 		packages := make(map[string]bool)
 		for _, file := range testFiles {
-			pkg := filepath.Dir(file)
-			packages[pkg] = true
+			pkgDir := filepath.Dir(file)
+			relPkg, err := filepath.Rel(root, pkgDir)
+			if err != nil {
+				relPkg = pkgDir
+			}
+			packages[relPkg] = true
 		}
 		pkgList := make([]string, 0, len(packages))
 		for pkg := range packages {
+			if pkg == "." {
+				pkgList = append(pkgList, ".")
+				continue
+			}
+			if filepath.IsAbs(pkg) {
+				pkgList = append(pkgList, pkg)
+				continue
+			}
 			pkgList = append(pkgList, "./"+pkg)
 		}
 		return "go test " + strings.Join(pkgList, " ")

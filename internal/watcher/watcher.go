@@ -14,12 +14,12 @@ import (
 
 // Watcher monitors files for changes and triggers callbacks.
 type Watcher struct {
-	watcher       *fsnotify.Watcher
-	root          string
-	debounceDelay time.Duration
-	ignorePatterns []string
+	watcher         *fsnotify.Watcher
+	root            string
+	debounceDelay   time.Duration
+	ignorePatterns  []string
 	includePatterns []string
-	onChange      func(paths []string)
+	onChange        func(paths []string)
 
 	mu            sync.Mutex
 	pendingFiles  map[string]bool
@@ -97,9 +97,12 @@ func (w *Watcher) addWatches(root string) error {
 
 		// Skip if path matches ignore patterns
 		if w.shouldIgnore(path) {
-			if info != nil && info.IsDir() && filepath.Base(path)[0] != '.' {
-				// For non-hidden directories, skip the whole tree
-				return filepath.SkipDir
+			if info != nil && info.IsDir() {
+				base := filepath.Base(path)
+				if base != "" && base[0] != '.' {
+					// For non-hidden directories, skip the whole tree
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
@@ -127,6 +130,16 @@ func (w *Watcher) eventLoop(ctx context.Context) {
 				return
 			}
 
+			// Handle new directories so we watch inside them
+			if event.Op&fsnotify.Create == fsnotify.Create {
+				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+					if !w.shouldIgnore(event.Name) {
+						_ = w.watcher.Add(event.Name)
+					}
+					continue
+				}
+			}
+
 			// Ignore if not a relevant operation
 			if !w.isRelevantEvent(event) {
 				continue
@@ -150,7 +163,7 @@ func (w *Watcher) eventLoop(ctx context.Context) {
 				return
 			}
 			// Log error but continue watching
-			fmt.Printf("watch error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "watch error: %v\n", err)
 		}
 	}
 }
