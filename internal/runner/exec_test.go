@@ -441,6 +441,30 @@ func TestApplyAutoFixRules(t *testing.T) {
 			rules:   []config.AutoFixRule{},
 			expected: "bundle exec rubocop",
 		},
+		{
+			name:    "word boundary prevents partial match",
+			command: "bundle exec standardrb",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:  "standard",
+					AddFlags: []string{"--fix"},
+				},
+			},
+			// Should NOT match because we use word boundaries
+			expected: "bundle exec standardrb",
+		},
+		{
+			name:    "flag at start of command",
+			command: "--parallel rubocop src/",
+			rules: []config.AutoFixRule{
+				{
+					Pattern:     "rubocop",
+					RemoveFlags: []string{"--parallel"},
+					AddFlags:    []string{"-A"},
+				},
+			},
+			expected: "rubocop src/ -A",
+		},
 	}
 
 	for _, tt := range tests {
@@ -481,7 +505,7 @@ func TestRunnerAutoFix(t *testing.T) {
 	if !strings.Contains(results[0].Stdout, "fixed") {
 		t.Errorf("expected 'fixed' in output, got: %q", results[0].Stdout)
 	}
-	if strings.Contains(results[0].Stdout, "test") && !strings.Contains(results[0].Stdout, "fixed") {
-		t.Errorf("expected command to be transformed, but got original command output: %q", results[0].Stdout)
+	if strings.Contains(results[0].Stdout, "test") {
+		t.Errorf("expected command to be transformed to 'echo fixed', but output contains 'test': %q", results[0].Stdout)
 	}
 }

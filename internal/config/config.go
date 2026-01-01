@@ -32,10 +32,10 @@ type Config struct {
 
 // AutoFixRule defines how to transform a command for auto-fixing.
 type AutoFixRule struct {
-	Pattern     string   `yaml:"pattern"`      // Substring or regex to match in command
+	Pattern     string   `yaml:"pattern"`      // Pattern to match in command (uses word boundaries)
 	RemoveFlags []string `yaml:"remove_flags"` // Flags to remove (e.g., "--parallel", "--check")
 	AddFlags    []string `yaml:"add_flags"`    // Flags to add (e.g., "-A", "--fix")
-	Replace     string   `yaml:"replace"`      // If set, replaces entire command
+	Replace     string   `yaml:"replace"`      // If set, replaces entire command (ignores flag operations)
 }
 
 // WarnConfig controls additional warning behaviour.
@@ -56,6 +56,7 @@ func Default() Config {
 }
 
 // DefaultAutoFixRules returns sensible auto-fix transformations for common linting tools.
+// More specific patterns should come first to avoid partial matches.
 func DefaultAutoFixRules() []AutoFixRule {
 	return []AutoFixRule{
 		{
@@ -64,11 +65,12 @@ func DefaultAutoFixRules() []AutoFixRule {
 			AddFlags:    []string{"-A"},
 		},
 		{
-			Pattern:  "standard",
+			// More specific pattern first to avoid matching "standard"
+			Pattern:  "standardrb",
 			AddFlags: []string{"--fix"},
 		},
 		{
-			Pattern:  "standardrb",
+			Pattern:  "standard",
 			AddFlags: []string{"--fix"},
 		},
 		{
@@ -85,8 +87,9 @@ func DefaultAutoFixRules() []AutoFixRule {
 			AddFlags: []string{"--fix"},
 		},
 		{
-			Pattern:  "black",
-			AddFlags: []string{},
+			// Black auto-formats by default, but --check mode only checks
+			Pattern:     "black",
+			RemoveFlags: []string{"--check"},
 		},
 	}
 }
@@ -160,8 +163,8 @@ func merge(base, override Config) Config {
 	if override.AutoFix {
 		out.AutoFix = true
 	}
-	if len(override.AutoFixRules) > 0 {
-		// User-provided rules completely replace defaults
+	if override.AutoFixRules != nil {
+		// User-provided rules completely replace defaults (even if empty list)
 		out.AutoFixRules = append([]AutoFixRule{}, override.AutoFixRules...)
 	}
 

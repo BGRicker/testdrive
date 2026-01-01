@@ -570,14 +570,17 @@ func DefaultPrivilegedPatterns() []string {
 }
 
 // applyAutoFixRules transforms a command for auto-fixing based on configured rules.
+// Only the first matching rule is applied.
 func applyAutoFixRules(command string, rules []config.AutoFixRule) string {
 	for _, rule := range rules {
 		if rule.Pattern == "" {
 			continue
 		}
 
-		// Check if command matches this rule's pattern
-		if !strings.Contains(command, rule.Pattern) {
+		// Check if command matches this rule's pattern using word boundaries
+		pattern := `\b` + regexp.QuoteMeta(rule.Pattern) + `\b`
+		matched, err := regexp.MatchString(pattern, command)
+		if err != nil || !matched {
 			continue
 		}
 
@@ -594,18 +597,19 @@ func applyAutoFixRules(command string, rules []config.AutoFixRule) string {
 			if flag == "" {
 				continue
 			}
-			// Remove the flag with surrounding whitespace
-			flagPattern := regexp.MustCompile(`\s+` + regexp.QuoteMeta(flag) + `\b`)
+			// Remove the flag with optional surrounding whitespace (handles flags at start)
+			flagPattern := regexp.MustCompile(`\s*` + regexp.QuoteMeta(flag) + `\b`)
 			result = flagPattern.ReplaceAllString(result, "")
 		}
 
-		// Add flags (at the end, before any trailing operators)
+		// Add flags at the end
 		for _, flag := range rule.AddFlags {
 			if flag == "" {
 				continue
 			}
-			// Only add if flag isn't already present
-			if !strings.Contains(result, flag) {
+			// Only add if flag isn't already present (using word boundaries)
+			flagPattern := `\b` + regexp.QuoteMeta(flag) + `\b`
+			if matched, _ := regexp.MatchString(flagPattern, result); !matched {
 				result = strings.TrimSpace(result) + " " + flag
 			}
 		}
